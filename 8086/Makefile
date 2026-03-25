@@ -19,7 +19,7 @@ SWITCHES+= -D PROFILE
 # DEBUG_FLAG+= -g -pg
 endif
 
-COMMON_CPP_FLAGS=-Wall -pedantic $(DEBUG_FLAG) $(OPTIMIZATION_FLAG) -I/usr/local/include
+COMMON_CPP_FLAGS=-Wall $(DEBUG_FLAG) $(OPTIMIZATION_FLAG) -I/usr/local/include
 
 LINK_FLAGS=
 

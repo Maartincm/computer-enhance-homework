@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <bitset>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -5,54 +7,56 @@
 #include <stdlib.h>
 
 #define BUFFER_SIZE 1024
+#define BUFFER_PADDING 8
 
-#define OP_MOV 0b100010
+#define OP_MOV_REG_MEM 0b10001000
+#define OP_MOV_IMMEDIATE_TO_REG_MEM 0b11000110
+#define OP_MOV_IMMEDIATE_TO_REG 0b10110000
+#define OP_MOV_MEMORY_ACCUMULATOR 0b10100000
 
+#define OP_MODE_MEMORY_MODE_NO_DISP 0b00
+#define OP_MODE_MEMORY_MODE_BYTE_DISP 0b01
+#define OP_MODE_MEMORY_MODE_WORD_DISP 0b10
 #define OP_MODE_REGISTER_MODE 0b11
 
-union OpCodeByte1 {
+union OpCodeByte {
   uint8_t byte;
   struct {
     uint8_t width : 1;
     uint8_t direction : 1;
     uint8_t code : 6;
-  } fields;
-  struct {
-    uint8_t dir_and_width : 2;
-    uint8_t : 6;
-  } merged;
-};
-union OpCodeByte2 {
-  uint8_t byte;
+  } f1;
   struct {
     uint8_t reg_mem : 3;
     uint8_t reg : 3;
     uint8_t mode : 2;
-  } fields;
+  } f2;
 };
 
 const char *register_array[] = {"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"};
 const char *register_array_wide[] = {"ax", "cx", "dx", "bx",
                                      "sp", "bp", "si", "di"};
+const char *address_calculation_array[] = {
+    "bx + si", "bx + di", "bp + si", "bp + di", "si", "di", "bp", "bx"};
 
-void print_bytes(const char *bytes, uint32_t size, uint8_t column_width) {
-  printf("Input bytes:\n");
-  uint32_t printed_byte_count = 0;
-  for (uint32_t i = 0; i < size; i += 8) {
-    printf("%.8s", bytes + i);
-    printed_byte_count++;
-    if (printed_byte_count > column_width) {
-      printed_byte_count = 0;
+inline void byte_c_str(uint8_t val, char *target) {
+  strcpy(target, std::bitset<8>(val).to_string().c_str());
+}
+
+void print_bytes(uint8_t *bytes, uint32_t size, uint8_t column_width) {
+  for (uint32_t i = 0; i < size; i++) {
+    printf("%s", std::bitset<8>(bytes[i]).to_string().c_str());
+    if (!((i + 1) % column_width)) {
       printf("\n");
     } else {
       printf(" ");
     }
   }
-  printf("\n");
+  if (size % column_width) {
+    printf("\n");
+  }
 }
-void print_bytes(const char *bytes, uint32_t size) {
-  print_bytes(bytes, size, 8);
-}
+void print_bytes(uint8_t *bytes, uint32_t size) { print_bytes(bytes, size, 8); }
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {
@@ -67,98 +71,240 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   FILE *output_decoded_file_pointer;
-  const char output_filepath[] = "8086.decoded";
+  const char output_filepath[] = "decoded.asm";
   output_decoded_file_pointer = std::fopen(output_filepath, "w");
 
-  uint8_t buffer[BUFFER_SIZE]{};
-  char bin_str[BUFFER_SIZE * 8 + 1]{};
-  uint32_t bytes_read = 0;
-  printf("Decoded instructions:\n");
+  uint8_t buffer[BUFFER_SIZE + BUFFER_PADDING]{};
+  uint8_t *buf_p = buffer + BUFFER_PADDING;
+  uint32_t bytes_decoded_count = 0;
+  char transient_byte_char_array[9] = {};
   while (1) {
-    bytes_read = std::fread(buffer, sizeof(uint8_t), BUFFER_SIZE,
-                            input_bytecode_file_pointer);
-    for (uint32_t i = 0; i < bytes_read; i += 2) {
-      // uint8_t byte_read_1 = buffer[i];
-      // uint8_t byte_read_2 = buffer[i + 1];
-      //
-      // uint8_t op_code = byte_read_1 & 0b11111100;
-      // uint8_t op_direction = byte_read_1 & 0b00000010;
-      // uint8_t op_width = byte_read_1 & 0b00000001;
-      // uint8_t op_mode = byte_read_2 & 0b11000000;
-      // uint8_t op_register = (byte_read_2 & 0b00111000) >> 3;
-      // uint8_t op_register_mem = byte_read_2 & 0b00000111;
+    uint32_t bytes_read = std::fread(buffer + BUFFER_PADDING, sizeof(uint8_t),
+                                     BUFFER_SIZE, input_bytecode_file_pointer);
+    printf("\n==============================================\n");
+    printf("Read block of %u bytes:\n", bytes_read);
 
-      OpCodeByte1 opcode_byte1{buffer[i]};
-      OpCodeByte2 opcode_byte2{buffer[i + 1]};
+    printf("\nBuffer padding status:\n");
+    print_bytes(buffer, BUFFER_PADDING, 2);
+    printf("\nInput bytes:\n");
+    print_bytes(buffer + BUFFER_PADDING, bytes_read, 2);
 
-      char instruction[32]{};
-      switch (opcode_byte1.fields.code) {
-      case OP_MOV:
-        switch (opcode_byte2.fields.mode) {
-        case OP_MODE_REGISTER_MODE:
+    uint8_t *buffer_break_point =
+        std::min(buffer + BUFFER_PADDING + bytes_read, buffer + BUFFER_SIZE);
 
-          switch (opcode_byte1.merged.dir_and_width) {
-          // const char **reg_lookup =
-          //     opcode_byte1.fields.width ? register_array_wide :
-          //     register_array;
-          // uint8_t source_reg = opcode_byte1.fields.direction
-          //                          ? opcode_byte2.fields.reg_mem
-          //                          : opcode_byte2.fields.reg;
-          // uint8_t target_reg = opcode_byte1.fields.direction
-          //                          ? opcode_byte2.fields.reg
-          //                          : opcode_byte2.fields.reg_mem;
-          // snprintf(instruction, sizeof(instruction), "mov %s, %s",
-          //          reg_lookup[target_reg], reg_lookup[source_reg]);
-          case 0b00:
-            snprintf(instruction, sizeof(instruction), "mov %s, %s",
-                     register_array[opcode_byte2.fields.reg_mem],
-                     register_array[opcode_byte2.fields.reg]);
-            break;
-          case 0b01:
-            snprintf(instruction, sizeof(instruction), "mov %s, %s",
-                     register_array_wide[opcode_byte2.fields.reg_mem],
-                     register_array_wide[opcode_byte2.fields.reg]);
-            break;
-          case 0b10:
-            snprintf(instruction, sizeof(instruction), "mov %s, %s",
-                     register_array[opcode_byte2.fields.reg],
-                     register_array[opcode_byte2.fields.reg_mem]);
-            break;
-          case 0b11:
-            snprintf(instruction, sizeof(instruction), "mov %s, %s",
-                     register_array_wide[opcode_byte2.fields.reg],
-                     register_array_wide[opcode_byte2.fields.reg_mem]);
-            break;
-          default:
-            break;
+    printf("\nDecoded instructions:\n");
+    while (buf_p < buffer_break_point) {
+      uint8_t *instruction_first_byte_pointer = buf_p;
+      char instruction[128]{};
+      OpCodeByte opcode_byte1{*buf_p++};
+      const char **lookup_array =
+          opcode_byte1.f1.width ? register_array_wide : register_array;
+
+      switch (opcode_byte1.byte & 0b11111110) {
+      case OP_MOV_IMMEDIATE_TO_REG_MEM: {
+        OpCodeByte opcode_byte2{*buf_p++};
+        uint32_t displacement = 0;
+        char mem_block[32]{};
+        switch (opcode_byte2.f2.mode) {
+        case OP_MODE_MEMORY_MODE_NO_DISP: {
+          if (opcode_byte2.f2.reg_mem == 0b110) {
+            // NOTE: DIRECT ADDRESS case
+            uint8_t data_low = *buf_p++;
+            displacement = data_low + (*buf_p++ << 8);
           }
           break;
-
+        }
+        case OP_MODE_MEMORY_MODE_BYTE_DISP: {
+          displacement = *buf_p++;
+          if (displacement & 0x80) {
+            displacement += (0xff << 8);
+          }
+          break;
+        }
+        case OP_MODE_MEMORY_MODE_WORD_DISP: {
+          uint8_t data_low = *buf_p++;
+          displacement = data_low + (*buf_p++ << 8);
+          break;
+        }
+        default:
+          break;
+        }
+        uint32_t data = *buf_p++;
+        if (opcode_byte1.f1.width) {
+          data += *buf_p++ << 8;
+        }
+        if (displacement && opcode_byte2.f2.reg_mem == 0b110) {
+          snprintf(mem_block, sizeof(mem_block), "[%u]", displacement);
+        } else if (displacement) {
+          snprintf(mem_block, sizeof(mem_block), "[%s + %u]",
+                   address_calculation_array[opcode_byte2.f2.reg_mem],
+                   displacement);
+        } else {
+          snprintf(mem_block, sizeof(mem_block), "[%s]",
+                   address_calculation_array[opcode_byte2.f2.reg_mem]);
+        }
+        char immediate[16]{};
+        if (opcode_byte1.f1.width) {
+          snprintf(immediate, sizeof(immediate), "word %u", data);
+        } else {
+          snprintf(immediate, sizeof(immediate), "byte %u", data);
+        }
+        const char *source = immediate;
+        const char *target = mem_block;
+        snprintf(instruction, sizeof(instruction), "mov %s, %s", target,
+                 source);
+        break;
+      }
+      default:
+        break;
+      }
+      switch (opcode_byte1.byte & 0b11111100) {
+      case OP_MOV_REG_MEM: {
+        OpCodeByte opcode_byte2{*buf_p++};
+        switch (opcode_byte2.f2.mode) {
+        case OP_MODE_REGISTER_MODE: {
+          uint8_t source = opcode_byte1.f1.direction ? opcode_byte2.f2.reg_mem
+                                                     : opcode_byte2.f2.reg;
+          uint8_t target = opcode_byte1.f1.direction ? opcode_byte2.f2.reg
+                                                     : opcode_byte2.f2.reg_mem;
+          snprintf(instruction, sizeof(instruction), "mov %s, %s",
+                   lookup_array[target], lookup_array[source]);
+          break;
+        }
+        // NOTE: Handling REG TO MEM or MEM TO REG cases
+        case OP_MODE_MEMORY_MODE_NO_DISP: {
+          char mem_block[32]{};
+          if (opcode_byte2.f2.reg_mem == 0b110) {
+            // NOTE: DIRECT ADDRESS case
+            uint8_t data_low = *buf_p++;
+            uint32_t displacement = data_low + (*buf_p++ << 8);
+            snprintf(mem_block, sizeof(mem_block), "[%u]", displacement);
+          } else {
+            snprintf(mem_block, sizeof(mem_block), "[%s]",
+                     address_calculation_array[opcode_byte2.f2.reg_mem]);
+          }
+          const char *source = opcode_byte1.f1.direction
+                                   ? mem_block
+                                   : lookup_array[opcode_byte2.f2.reg];
+          const char *target = opcode_byte1.f1.direction
+                                   ? lookup_array[opcode_byte2.f2.reg]
+                                   : mem_block;
+          snprintf(instruction, sizeof(instruction), "mov %s, %s", target,
+                   source);
+          break;
+        }
+        case OP_MODE_MEMORY_MODE_BYTE_DISP: {
+          char mem_block[32]{};
+          uint32_t displacement = *buf_p++;
+          if (displacement & 0x80) {
+            displacement += (0xff << 8);
+          }
+          snprintf(mem_block, sizeof(mem_block), "[%s + %u]",
+                   address_calculation_array[opcode_byte2.f2.reg_mem],
+                   displacement);
+          const char *source = opcode_byte1.f1.direction
+                                   ? mem_block
+                                   : lookup_array[opcode_byte2.f2.reg];
+          const char *target = opcode_byte1.f1.direction
+                                   ? lookup_array[opcode_byte2.f2.reg]
+                                   : mem_block;
+          snprintf(instruction, sizeof(instruction), "mov %s, %s", target,
+                   source);
+          break;
+        }
+        case OP_MODE_MEMORY_MODE_WORD_DISP: {
+          char mem_block[32]{};
+          uint8_t data_low = *buf_p++;
+          uint32_t displacement = data_low + (*buf_p++ << 8);
+          snprintf(mem_block, sizeof(mem_block), "[%s + %u]",
+                   address_calculation_array[opcode_byte2.f2.reg_mem],
+                   displacement);
+          const char *source = opcode_byte1.f1.direction
+                                   ? mem_block
+                                   : lookup_array[opcode_byte2.f2.reg];
+          const char *target = opcode_byte1.f1.direction
+                                   ? lookup_array[opcode_byte2.f2.reg]
+                                   : mem_block;
+          snprintf(instruction, sizeof(instruction), "mov %s, %s", target,
+                   source);
+          break;
+        }
         default:
           break;
         }
         break;
+      }
+      case OP_MOV_MEMORY_ACCUMULATOR: {
+        uint32_t address = *buf_p++;
+        if (opcode_byte1.f1.width) {
+          address += *buf_p++ << 8;
+        }
+        char mem_block[32]{};
+        snprintf(mem_block, sizeof(mem_block), "[%u]", address);
+        const char *source = opcode_byte1.f1.direction ? "ax" : mem_block;
+        const char *target = opcode_byte1.f1.direction ? mem_block : "ax";
+        snprintf(instruction, sizeof(instruction), "mov %s, %s", target,
+                 source);
+        break;
+      }
+      default:
+        break;
+      }
+      // NOTE: Handle op codes that encode the REG as lowest 3 bits of the first
+      // byte
+      switch (opcode_byte1.byte & 0b11110000) {
+      case OP_MOV_IMMEDIATE_TO_REG: {
+        uint32_t data = *buf_p++;
+        const char **lookup_array = register_array;
+        if (opcode_byte1.byte & 0b00001000) {
+          lookup_array = register_array_wide;
+          data += *buf_p++ << 8;
+        }
+        snprintf(instruction, sizeof(instruction), "mov %s, %u",
+                 lookup_array[opcode_byte1.f2.reg_mem], data);
+        break;
+      }
       default:
         break;
       }
 
-      printf("%s\n", instruction);
-      fprintf(output_decoded_file_pointer, "%s\n", instruction);
-
-      // Write the ASCII representation of the binary ones and zeroes
-      for (int8_t j = 0; j < 8; j++) {
-        bin_str[i * 8 + j] = ((opcode_byte1.byte >> j & 0x01) == 1) ? '1' : '0';
-        bin_str[(i + 1) * 8 + j] =
-            ((opcode_byte2.byte >> j & 0x01) == 1) ? '1' : '0';
+      if (!instruction[0]) {
+        printf("Error decoding bytecode at location %u\n", bytes_decoded_count);
+        printf("Next 4 bytes were ");
+        for (uint8_t i = 0; i < 4; i++) {
+          byte_c_str(instruction_first_byte_pointer[i],
+                     transient_byte_char_array);
+          printf("%s ", transient_byte_char_array);
+        }
+        printf("\n");
+        return 1;
       }
+
+      uint8_t decoded_byte_count = buf_p - instruction_first_byte_pointer;
+      printf("%s", instruction);
+      printf("\t\t | ");
+      for (uint8_t i = 0; i < decoded_byte_count; i++) {
+        byte_c_str(instruction_first_byte_pointer[i],
+                   transient_byte_char_array);
+        printf("%s ", transient_byte_char_array);
+      }
+      printf("\n");
+      fprintf(output_decoded_file_pointer, "%s\n", instruction);
+      bytes_decoded_count += decoded_byte_count;
     }
-    uint32_t decoded_size = bytes_read * 8;
-    bin_str[decoded_size] = '\0';
-    printf("\n");
-    print_bytes(bin_str, decoded_size, 2);
     if (bytes_read < BUFFER_SIZE) {
       break;
     }
+    uint8_t bytes_remaining = buffer + BUFFER_PADDING + BUFFER_SIZE - buf_p;
+    for (uint8_t i = 0; i < BUFFER_PADDING - bytes_remaining; i++) {
+      buffer[i] = 0;
+    }
+    for (uint8_t i = bytes_remaining; i > 0; i--) {
+      buffer[BUFFER_PADDING - i] = *buf_p++;
+    }
+    buf_p = buffer + BUFFER_PADDING - bytes_remaining;
+    printf("Finished block. Copying %u bytes into padding.\n", bytes_remaining);
+    printf("==============================================\n");
   }
   return 0;
 }
