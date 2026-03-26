@@ -34,14 +34,20 @@ union OpCodeByte {
     uint8_t mode : 2;
   } f2;
 };
-typedef uint8_t(OpCodeHandler)(char *, OpCodeByte, uint8_t *);
-OpCodeHandler *opcode_to_handler_mapping[256];
+typedef uint8_t(OpCodeHandler)(char *, OpCodeByte, uint8_t *, const char *);
+struct OpCodeHandlerMapping {
+  OpCodeHandler *handler;
+  const char *instruction_name;
+};
+OpCodeHandlerMapping opcode_to_handler_mapping[256];
 
 const char *register_array[] = {"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"};
 const char *register_array_wide[] = {"ax", "cx", "dx", "bx",
                                      "sp", "bp", "si", "di"};
 const char *address_calculation_array[] = {
     "bx + si", "bx + di", "bp + si", "bp + di", "si", "di", "bp", "bx"};
+const char *icode_reg[] = {"add", "or",  "adc", "sbb",
+                           "and", "sub", "unk", "cmp"};
 
 inline void byte_c_str(uint8_t val, char *target) {
   strcpy(target, std::bitset<8>(val).to_string().c_str());
@@ -63,8 +69,10 @@ void print_bytes(uint8_t *bytes, uint32_t size, uint8_t column_width) {
 void print_bytes(uint8_t *bytes, uint32_t size) { print_bytes(bytes, size, 8); }
 
 uint8_t unknown_opcode_handler(char *instruction_dest, OpCodeByte opcode,
-                               uint8_t *bytecode_stream) {
-  printf("Uknown opcode: %b\n", opcode.byte);
+                               uint8_t *bytecode_stream, const char *icode) {
+  printf("ERROR: Uknown opcode: ");
+  print_bytes(&opcode.byte, 1);
+  printf("\n");
   return 0;
 }
 
@@ -93,7 +101,8 @@ inline uint8_t get_mem_block(char *mem_block_dest, OpCodeByte opcode,
   } else if (has_displacement && displacement) {
     const char *sign_str = displacement < 0 ? "-" : "+";
     snprintf(mem_block_dest, MEM_BLOCK_SIZE, "[%s %s %d]",
-             address_calculation_array[opcode_byte2.f2.reg_mem], sign_str, displacement < 0 ? -displacement : displacement);
+             address_calculation_array[opcode_byte2.f2.reg_mem], sign_str,
+             displacement < 0 ? -displacement : displacement);
   } else {
     snprintf(mem_block_dest, MEM_BLOCK_SIZE, "[%s]",
              address_calculation_array[opcode_byte2.f2.reg_mem]);
@@ -103,7 +112,8 @@ inline uint8_t get_mem_block(char *mem_block_dest, OpCodeByte opcode,
 
 uint8_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
                                        OpCodeByte opcode,
-                                       uint8_t *bytecode_stream) {
+                                       uint8_t *bytecode_stream,
+                                       const char *icode) {
   OpCodeByte opcode_byte2{*bytecode_stream++};
   uint8_t bytes_decoded_count = 1;
   char mem_block[MEM_BLOCK_SIZE]{};
@@ -125,14 +135,15 @@ uint8_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
     target =
         opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg] : mem_block;
   }
-  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "mov %s, %s", target,
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
            source);
   return bytes_decoded_count;
 }
 
 uint8_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
                                          OpCodeByte opcode,
-                                         uint8_t *bytecode_stream) {
+                                         uint8_t *bytecode_stream,
+                                         const char *icode) {
   OpCodeByte opcode_byte2{*bytecode_stream++};
   uint8_t bytes_decoded_count = 1;
   char mem_block[MEM_BLOCK_SIZE]{};
@@ -142,26 +153,36 @@ uint8_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
 
   uint32_t data = *bytecode_stream++;
   bytes_decoded_count++;
-  if (opcode.f1.width) {
+  char immediate[16]{};
+  if (opcode.f1.width &&
+      (!opcode.f1.direction || (icode[0] == 'm' && icode[1] == 'o'))) {
     data += *bytecode_stream++ << 8;
     bytes_decoded_count++;
   }
-
-  char immediate[16]{};
   if (opcode.f1.width) {
     snprintf(immediate, sizeof(immediate), "word %u", data);
   } else {
     snprintf(immediate, sizeof(immediate), "byte %u", data);
   }
   const char *source = immediate;
-  const char *target = mem_block;
-  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "mov %s, %s", target,
-           source);
+  const char *target;
+  if (opcode_byte2.f2.mode == 0b11) {
+    target = opcode.f1.width ? register_array_wide[opcode_byte2.f2.reg_mem]
+                             : register_array[opcode_byte2.f2.reg_mem];
+  } else {
+    target = mem_block;
+  }
+  const char *actual_icode = (icode[0] == 'm' && icode[1] == 'o')
+                                 ? icode
+                                 : icode_reg[opcode_byte2.f2.reg];
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", actual_icode,
+           target, source);
   return bytes_decoded_count;
 }
 
 uint8_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
-                                     uint8_t *bytecode_stream) {
+                                     uint8_t *bytecode_stream,
+                                     const char *icode) {
   int bytes_decoded_count = 1;
   uint32_t data = *bytecode_stream++;
   const char **lookup_array = register_array;
@@ -170,13 +191,14 @@ uint8_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
     data += *bytecode_stream++ << 8;
     bytes_decoded_count++;
   }
-  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "mov %s, %u",
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %u", icode,
            lookup_array[opcode.f2.reg_mem], data);
   return bytes_decoded_count;
 }
 
 uint8_t mov_mem_to_from_accum_handler(char *instruction_dest, OpCodeByte opcode,
-                                      uint8_t *bytecode_stream) {
+                                      uint8_t *bytecode_stream,
+                                      const char *icode) {
   int bytes_decoded_count = 1;
   uint32_t address = *bytecode_stream++;
   if (opcode.f1.width) {
@@ -187,8 +209,76 @@ uint8_t mov_mem_to_from_accum_handler(char *instruction_dest, OpCodeByte opcode,
   snprintf(mem_block, sizeof(mem_block), "[%u]", address);
   const char *source = opcode.f1.direction ? "ax" : mem_block;
   const char *target = opcode.f1.direction ? mem_block : "ax";
-  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "mov %s, %s", target,
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
            source);
+  return bytes_decoded_count;
+}
+
+uint8_t add_reg_mem_with_reg_handler(char *instruction_dest, OpCodeByte opcode,
+                                     uint8_t *bytecode_stream,
+                                     const char *icode) {
+  OpCodeByte opcode_byte2{*bytecode_stream++};
+  uint8_t bytes_decoded_count = 1;
+  char mem_block[MEM_BLOCK_SIZE]{};
+  bytes_decoded_count +=
+      get_mem_block(mem_block, opcode, opcode_byte2, bytecode_stream);
+  bytecode_stream += bytes_decoded_count - 1;
+  const char **lookup_array =
+      opcode.f1.width ? register_array_wide : register_array;
+  const char *source;
+  const char *target;
+  if (opcode_byte2.f2.mode == 0b11) {
+    source = opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg_mem]
+                                 : lookup_array[opcode_byte2.f2.reg];
+    target = opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg]
+                                 : lookup_array[opcode_byte2.f2.reg_mem];
+  } else {
+    source =
+        opcode.f1.direction ? mem_block : lookup_array[opcode_byte2.f2.reg];
+    target =
+        opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg] : mem_block;
+  }
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "add %s, %s", target,
+           source);
+  return bytes_decoded_count;
+}
+uint8_t add_immediate_to_reg_mem_handler(char *instruction_dest,
+                                         OpCodeByte opcode,
+                                         uint8_t *bytecode_stream,
+                                         const char *icode) {
+  return 0;
+}
+uint8_t add_immediate_to_accum_handler(char *instruction_dest,
+                                       OpCodeByte opcode,
+                                       uint8_t *bytecode_stream,
+                                       const char *icode) {
+  int bytes_decoded_count = 1;
+
+  int16_t data = *bytecode_stream++;
+  const char *reg = opcode.f1.width ? "ax" : "al";
+  if (opcode.f1.width) {
+    data += *bytecode_stream++ << 8;
+    bytes_decoded_count++;
+  } else if (data & 0x80) {
+    data = (0xff << 8) | data;
+  }
+  char mem_block[32]{};
+  snprintf(mem_block, sizeof(mem_block), "%d", data);
+  const char *source = opcode.f1.direction ? reg : mem_block;
+  const char *target = opcode.f1.direction ? mem_block : reg;
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
+           source);
+  return bytes_decoded_count;
+}
+
+uint8_t jump_handler(char *instruction_dest, OpCodeByte opcode,
+                     uint8_t *bytecode_stream, const char *icode) {
+  int bytes_decoded_count = 1;
+
+  int8_t offset = *bytecode_stream++;
+  offset += 2;
+  const char sign_str = offset < 0 ? '-' : '+';
+  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s $%c%d", icode, sign_str, offset < 0 ? -offset : offset);
   return bytes_decoded_count;
 }
 
@@ -212,28 +302,94 @@ int main(int argc, char *argv[]) {
   uint8_t *buf_p = buffer + BUFFER_PADDING;
   uint32_t bytes_decoded_count = 0;
   char transient_byte_char_array[9] = {};
+
+  // NOTE: Initialize all handlers to a non implemented catchall.
   for (uint8_t i = 0; i != 255; i++) {
-    opcode_to_handler_mapping[i] = unknown_opcode_handler;
+    opcode_to_handler_mapping[i] = {unknown_opcode_handler, "unk"};
   }
 
+  // NOTE: Here we set each handler for the set of opcodes they can be accessed
+  // with
   for (uint8_t i = 0; i < 4; i++)
-    opcode_to_handler_mapping[(0b100010 << 2) | i] = mov_reg_mem_to_reg_mem_handler;
+    opcode_to_handler_mapping[(0b100010 << 2) | i] = {
+        mov_reg_mem_to_reg_mem_handler, "mov"};
   for (uint8_t i = 0; i < 4; i++)
-    opcode_to_handler_mapping[(0b101000 << 2) | i] = mov_mem_to_from_accum_handler;
+    opcode_to_handler_mapping[(0b101000 << 2) | i] = {
+        mov_mem_to_from_accum_handler, "mov"};
   for (uint8_t i = 0; i < 16; i++)
-    opcode_to_handler_mapping[(0b1011 << 4) | i] = mov_immediate_to_reg_handler;
-  opcode_to_handler_mapping[0b11000110] = mov_immediate_to_reg_mem_handler;
-  opcode_to_handler_mapping[0b11000111] = mov_immediate_to_reg_mem_handler;
+    opcode_to_handler_mapping[(0b1011 << 4) | i] = {
+        mov_immediate_to_reg_handler, "mov"};
+  opcode_to_handler_mapping[0b11000110] = {mov_immediate_to_reg_mem_handler,
+                                           "mov"};
+  opcode_to_handler_mapping[0b11000111] = {mov_immediate_to_reg_mem_handler,
+                                           "mov"};
+
+  // NOTE: Arithmetic
+  for (uint8_t i = 0; i < 4; i++)
+    opcode_to_handler_mapping[(0b000000 << 2) | i] = {
+        mov_reg_mem_to_reg_mem_handler, "add"};
+  for (uint8_t i = 0; i < 4; i++)
+    opcode_to_handler_mapping[(0b100000 << 2) | i] = {
+        mov_immediate_to_reg_mem_handler, "add"};
+  opcode_to_handler_mapping[0b00000100] = {add_immediate_to_accum_handler,
+                                           "add"};
+  opcode_to_handler_mapping[0b00000101] = {add_immediate_to_accum_handler,
+                                           "add"};
+
+  for (uint8_t i = 0; i < 4; i++)
+    opcode_to_handler_mapping[(0b001010 << 2) | i] = {
+        mov_reg_mem_to_reg_mem_handler, "sub"};
+  // for (uint8_t i = 0; i < 4; i++)
+  //   opcode_to_handler_mapping[(0b100000 << 2) | i] = {
+  //       mov_immediate_to_reg_mem_handler, "sub"};
+  opcode_to_handler_mapping[0b00101100] = {add_immediate_to_accum_handler,
+                                           "sub"};
+  opcode_to_handler_mapping[0b00101101] = {add_immediate_to_accum_handler,
+                                           "sub"};
+
+  for (uint8_t i = 0; i < 4; i++)
+    opcode_to_handler_mapping[(0b001110 << 2) | i] = {
+        mov_reg_mem_to_reg_mem_handler, "cmp"};
+  // for (uint8_t i = 0; i < 4; i++)
+  //   opcode_to_handler_mapping[(0b100000 << 2) | i] = {
+  //       mov_immediate_to_reg_mem_handler, "sub"};
+  opcode_to_handler_mapping[0b00111100] = {add_immediate_to_accum_handler,
+                                           "cmp"};
+  opcode_to_handler_mapping[0b00111101] = {add_immediate_to_accum_handler,
+                                           "cmp"};
+
+  // NOTE: Jumps!
+  opcode_to_handler_mapping[0b01110101] = {jump_handler, "jnz"};
+  opcode_to_handler_mapping[0b01110100] = {jump_handler, "je"};
+  opcode_to_handler_mapping[0b01111100] = {jump_handler, "jl"};
+  opcode_to_handler_mapping[0b01111110] = {jump_handler, "jle"};
+  opcode_to_handler_mapping[0b01110010] = {jump_handler, "jb"};
+  opcode_to_handler_mapping[0b01110110] = {jump_handler, "jbe"};
+  opcode_to_handler_mapping[0b01111010] = {jump_handler, "jp"};
+  opcode_to_handler_mapping[0b01110000] = {jump_handler, "jo"};
+  opcode_to_handler_mapping[0b01111000] = {jump_handler, "js"};
+  opcode_to_handler_mapping[0b01111101] = {jump_handler, "jnl"};
+  opcode_to_handler_mapping[0b01111111] = {jump_handler, "jg"};
+  opcode_to_handler_mapping[0b01110011] = {jump_handler, "jnb"};
+  opcode_to_handler_mapping[0b01110111] = {jump_handler, "ja"};
+  opcode_to_handler_mapping[0b01111011] = {jump_handler, "jnp"};
+  opcode_to_handler_mapping[0b01110001] = {jump_handler, "jno"};
+  opcode_to_handler_mapping[0b01111001] = {jump_handler, "jns"};
+  opcode_to_handler_mapping[0b11100010] = {jump_handler, "loop"};
+  opcode_to_handler_mapping[0b11100001] = {jump_handler, "loopz"};
+  opcode_to_handler_mapping[0b11100000] = {jump_handler, "loopnz"};
+  opcode_to_handler_mapping[0b11100011] = {jump_handler, "jcxz"};
+
   while (1) {
     uint32_t bytes_read = std::fread(buffer + BUFFER_PADDING, sizeof(uint8_t),
                                      BUFFER_SIZE, input_bytecode_file_pointer);
     printf("\n==============================================\n");
     printf("Read block of %u bytes:\n", bytes_read);
 
-    printf("\nBuffer padding status:\n");
-    print_bytes(buffer, BUFFER_PADDING, 2);
-    printf("\nInput bytes:\n");
-    print_bytes(buffer + BUFFER_PADDING, bytes_read, 2);
+    // printf("\nBuffer padding status:\n");
+    // print_bytes(buffer, BUFFER_PADDING, 2);
+    // printf("\nInput bytes:\n");
+    // print_bytes(buffer + BUFFER_PADDING, bytes_read, 2);
 
     uint8_t *buffer_break_point =
         std::min(buffer + BUFFER_PADDING + bytes_read, buffer + BUFFER_SIZE);
@@ -244,8 +400,10 @@ int main(int argc, char *argv[]) {
       char instruction[INSTRUCTION_DEST_SIZE]{};
       OpCodeByte opcode_byte1{*buf_p++};
 
-      OpCodeHandler *handler = opcode_to_handler_mapping[opcode_byte1.byte];
-      uint8_t decoded_byte_count = handler(instruction, opcode_byte1, buf_p);
+      OpCodeHandlerMapping handler_map =
+          opcode_to_handler_mapping[opcode_byte1.byte];
+      uint8_t decoded_byte_count = handler_map.handler(
+          instruction, opcode_byte1, buf_p, handler_map.instruction_name);
       buf_p += decoded_byte_count;
       decoded_byte_count++;
 

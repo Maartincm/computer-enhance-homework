@@ -1,11 +1,80 @@
-mov ax, [bx + di - 37]
-mov [si - 300], cx
-mov dx, [bx - 32]
-mov [bp + di], byte 7
-mov [di + 901], word 347
-mov bp, [5]
-mov bx, [3458]
-mov ax, [2555]
-mov ax, [16]
-mov [2554], ax
-mov [15], ax
+add [bp + si + 1000], word 29
+add ax, [bp]
+add al, [bx + si]
+add ax, bx
+add al, ah
+add ax, 1000
+add al, -30
+add al, 9
+sub bx, [bx + si]
+sub bx, [bp]
+sub si, word 2
+sub bp, word 2
+sub cx, word 8
+sub bx, [bp]
+sub cx, [bx + 2]
+sub bh, [bp + si + 4]
+sub di, [bp + di + 6]
+sub [bx + si], bx
+sub [bp], bx
+sub [bp], bx
+sub [bx + 2], cx
+sub [bp + si + 4], bh
+sub [bp + di + 6], di
+sub [bx], byte 34
+sub [bx + di], word 29
+sub ax, [bp]
+sub al, [bx + si]
+sub ax, bx
+sub al, ah
+sub ax, 1000
+sub al, -30
+sub al, 9
+cmp bx, [bx + si]
+cmp bx, [bp]
+cmp si, word 2
+cmp bp, word 2
+cmp cx, word 8
+cmp bx, [bp]
+cmp cx, [bx + 2]
+cmp bh, [bp + si + 4]
+cmp di, [bp + di + 6]
+cmp [bx + si], bx
+cmp [bp], bx
+cmp [bp], bx
+cmp [bx + 2], cx
+cmp [bp + si + 4], bh
+cmp [bp + di + 6], di
+cmp [bx], byte 34
+cmp [4834], word 29
+cmp ax, [bp]
+cmp al, [bx + si]
+cmp ax, bx
+cmp al, ah
+cmp ax, 1000
+cmp al, -30
+cmp al, 9
+jnz $+4
+jnz $-2
+jnz $-4
+jnz $-2
+je $+0
+jl $-2
+jle $-4
+jb $-6
+jbe $-8
+jp $-10
+jo $-12
+js $-14
+jnz $-16
+jnl $-18
+jg $-20
+jnb $-22
+ja $-24
+jnp $-26
+jno $-28
+jns $-30
+loop $-32
+loopz $-34
+loopnz $-36
+jcxz $-38
