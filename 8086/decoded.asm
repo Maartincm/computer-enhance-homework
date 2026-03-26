@@ -1,20 +1,14 @@
-mov ax, 8738
-mov bx, 17476
-mov cx, 26214
-mov dx, 34952
-mov ss, ax
-mov ds, bx
-mov es, cx
-mov al, 17
-mov bh, 51
-mov cl, 85
-mov dh, 119
-mov ah, bl
-mov cl, dh
-mov ss, ax
-mov ds, bx
-mov es, cx
-mov sp, ss
-mov bp, ds
-mov si, es
-mov di, dx
+add bx, word 30000
+add bx, word 10000
+sub bx, word 5000
+sub bx, word 5000
+mov bx, 1
+mov cx, 100
+add bx, cx
+mov dx, 10
+sub cx, dx
+add bx, word 40000
+add cx, word -90
+mov sp, 99
+mov bp, 98
+cmp bp, sp

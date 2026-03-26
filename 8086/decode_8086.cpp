@@ -13,6 +13,25 @@
 
 #define ARRAY_SIZE(input) (sizeof(input) / sizeof((input)[0]))
 
+namespace Flags {
+enum : uint16_t {
+  CARRY = 0,
+  PARITY = 1 << 2,
+  AUX_CARRY = 1 << 4,
+  ZERO = 1 << 6,
+  SIGN = 1 << 7,
+  TRAP = 1 << 8,
+  INTERRUPT = 1 << 9,
+  DIRECTION = 1 << 10,
+  OVERFLOW = 1 << 11,
+};
+}
+const char *flag_names_array[] = {"C", "?", "P", "?", "A", "?", "Z", "S",
+                                  "T", "I", "D", "O", "?", "?", "?", "?"};
+
+uint16_t flags_register{};
+uint16_t previuos_flags_register{};
+
 union OpCodeByte {
   uint8_t byte;
   struct {
@@ -49,6 +68,32 @@ uint16_t registers_previous_state[12]{};
 void snapshot_registers_state() {
   for (uint8_t i = 0; i < ARRAY_SIZE(registers); i++) {
     registers_previous_state[i] = registers[i];
+  }
+}
+
+void snapshot_flags_state() { previuos_flags_register = flags_register; }
+
+void print_flags_change() {
+  bool changed = false;
+  for (uint8_t i = 0; i < 16; i++) {
+    uint8_t cur_val = (flags_register >> i) & 0x01;
+    uint8_t prev_val = (previuos_flags_register >> i) & 0x01;
+    if (cur_val != prev_val) {
+      changed = true;
+    }
+    if (!cur_val && prev_val) {
+      printf("%s", flag_names_array[i]);
+    }
+  }
+  if (changed) {
+    printf(" -> ");
+    for (uint8_t i = 0; i < 16; i++) {
+      uint8_t cur_val = (flags_register >> i) & 0x01;
+      uint8_t prev_val = (previuos_flags_register >> i) & 0x01;
+      if (cur_val && !prev_val) {
+        printf("%s", flag_names_array[i]);
+      }
+    }
   }
 }
 
@@ -149,6 +194,100 @@ inline uint8_t get_mem_block(char *mem_block_dest, OpCodeByte opcode,
   return bytes_decoded_count;
 }
 
+void simulate(OpCodeByte opcode, uint8_t target_index,
+              uint8_t source_index, bool is_wide, bool is_immediate,
+              uint32_t provided_data, const char *icode) {
+  if (opcode.byte >> 2 == 0b100011) {
+    // NOTE: We are dealing with segment registers
+    if (opcode.f1.direction) {
+      target_index += 8;
+    } else {
+      source_index += 8;
+    }
+  }
+
+  uint32_t data;
+  if (is_immediate) {
+    data = provided_data;
+  } else {
+    uint8_t shift_amount = 0;
+    if (!is_wide && source_index >= 4 && source_index < 8) {
+      source_index = source_index % 4;
+      shift_amount = 8;
+    }
+    data = registers[source_index] >> shift_amount;
+  }
+
+  uint32_t input_data;
+  if (is_wide) {
+    input_data = data;
+  } else {
+    // NOTE: Handle only updating low or high byte of the register without
+    // overwriting everything.
+    uint16_t low_or_high_mask;
+    uint8_t shift_amount = 0;
+    if (target_index < 4) {
+      low_or_high_mask = 0x00ff;
+      shift_amount = 0;
+    } else {
+      low_or_high_mask = 0xff00;
+      shift_amount = 8;
+    }
+    if (target_index < 8) {
+      target_index = target_index % 4;
+    }
+    if (!is_immediate && !is_wide && source_index >= 4) {
+      data >>= 8;
+    }
+    input_data = (registers[target_index] & ~low_or_high_mask) |
+                 ((data << shift_amount) & low_or_high_mask);
+  }
+  if (icode[0] == 'm') {
+    registers[target_index] = input_data;
+  } else {
+    uint32_t res;
+    switch (icode[0]) {
+    case 'a': {
+      res = registers[target_index] + input_data;
+      registers[target_index] = res;
+      break;
+    }
+    case 's': {
+      res = registers[target_index] - input_data;
+      registers[target_index] = res;
+      break;
+    }
+    case 'c': {
+      res = registers[target_index] - input_data;
+      break;
+    }
+    }
+    flags_register = 0;
+    uint8_t ones_count = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+      if ((res >> i) & 0x01)
+        ones_count++;
+    }
+    if (ones_count % 2 == 0)
+      flags_register |= Flags::PARITY;
+    if (!res)
+      flags_register |= Flags::ZERO;
+    if (res & 0x8000)
+      flags_register |= Flags::SIGN;
+    if (res & 0xffff0000)
+      flags_register |= Flags::OVERFLOW;
+    if (icode[0] == 'a' && res & 0x10)
+      flags_register |= Flags::AUX_CARRY;
+    if (icode[0] == 'a' && res & 0x10000)
+      flags_register |= Flags::CARRY;
+    if (icode[0] == 's' && res & 0x8)
+      flags_register |= Flags::AUX_CARRY;
+    if (icode[0] == 's' && res & 0x8000)
+      flags_register |= Flags::CARRY;
+  }
+  // NOTE: SIMULATION Part ends.
+}
+
 uint8_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
                                        OpCodeByte opcode,
                                        uint8_t *bytecode_stream,
@@ -196,57 +335,7 @@ uint8_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
                                  : mem_block;
   }
 
-  // NOTE: SIMULATION Part. Try to extract concepts from here so the decoder
-  // matches the interface.
-
-  if (opcode.byte >> 2 == 0b100011) {
-    // NOTE: We are dealing with segment registers
-    if (opcode.f1.direction) {
-      target_index += 8;
-    } else {
-      source_index += 8;
-    }
-  }
-
-  uint32_t data;
-  if (opcode_byte2.f2.mode == 0b11) {
-    uint8_t shift_amount = 0;
-    if (!is_wide && source_index >= 4 && source_index < 8) {
-      source_index = source_index % 4;
-      shift_amount = 8;
-    }
-    data = registers[source_index] >> shift_amount;
-  } else {
-    // data = get_data_from_memory(mem_block);
-  }
-
-  if (is_wide) {
-    registers[target_index] = data;
-  } else {
-    // NOTE: Handle only updating low or high byte of the register without
-    // overwriting everything.
-    uint16_t low_or_high_mask;
-    uint8_t shift_amount = 0;
-    if (target_index < 4) {
-      low_or_high_mask = 0x00ff;
-      shift_amount = 0;
-    } else {
-      low_or_high_mask = 0xff00;
-      shift_amount = 8;
-    }
-    if (target_index < 8) {
-      target_index = target_index % 4;
-    }
-    if (!is_wide && source_index >= 4) {
-      data >>= 8;
-    }
-    if (opcode_byte2.byte == 0b11110001) {
-      printf("test");
-    }
-    registers[target_index] = (registers[target_index] & ~low_or_high_mask) |
-                              ((data << shift_amount) & low_or_high_mask);
-  }
-  // NOTE: SIMULATION Part ends.
+  simulate(opcode, target_index, source_index, is_wide, false, 0, icode);
 
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
            source);
@@ -264,25 +353,37 @@ uint8_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
       get_mem_block(mem_block, opcode, opcode_byte2, bytecode_stream);
   bytecode_stream += bytes_decoded_count - 1;
 
-  uint32_t data = *bytecode_stream++;
+  uint16_t data = *bytecode_stream++;
   bytes_decoded_count++;
   char immediate[16]{};
   bool is_wide = opcode.f1.width;
+  bool sign_extended = false;
   if (is_wide &&
       (!opcode.f1.direction || (icode[0] == 'm' && icode[1] == 'o'))) {
     data += *bytecode_stream++ << 8;
     bytes_decoded_count++;
+  } else if (opcode.f1.direction && !(icode[0] == 'm') && data & 0x80) {
+    data = (0xff << 8) | data;
+    sign_extended = true;
   }
   if (is_wide) {
-    snprintf(immediate, sizeof(immediate), "word %u", data);
+    if (sign_extended)
+      snprintf(immediate, sizeof(immediate), "word %d", int16_t(data));
+    else
+      snprintf(immediate, sizeof(immediate), "word %u", data);
   } else {
-    snprintf(immediate, sizeof(immediate), "byte %u", data);
+    if (sign_extended)
+      snprintf(immediate, sizeof(immediate), "byte %d", int16_t(data));
+    else
+      snprintf(immediate, sizeof(immediate), "byte %u", data);
   }
   const char *source = immediate;
   const char *target;
+  uint8_t target_index = -1;
   if (opcode_byte2.f2.mode == 0b11) {
     target = is_wide ? register_array_wide[opcode_byte2.f2.reg_mem]
                      : register_array[opcode_byte2.f2.reg_mem];
+    target_index = opcode_byte2.f2.reg_mem;
   } else {
     target = mem_block;
   }
@@ -290,8 +391,7 @@ uint8_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
                                  ? icode
                                  : icode_reg[opcode_byte2.f2.reg];
 
-  // NOTE: SIMULATION Part. Try to extract concepts from here so the decoder
-  // matches the interface. NOTE: SIMULATION Part ends.
+  simulate(opcode, target_index, 0, is_wide, true, data, actual_icode);
 
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", actual_icode,
            target, source);
@@ -311,33 +411,7 @@ uint8_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
     bytes_decoded_count++;
   }
 
-  // NOTE: SIMULATION Part. Try to extract concepts from here so the decoder
-  // matches the interface.
-
-  // if (instruction.type == InstructionType.IMMEDIATE_TO_MEMORY)
-  uint8_t target_register_index;
-  if (is_wide) {
-    target_register_index = opcode.f2.reg_mem;
-    registers[target_register_index] = data;
-  } else {
-    target_register_index = opcode.f2.reg_mem % 4;
-    // NOTE: Handle only updating low or high byte of the register without
-    // overwriting everything.
-    uint16_t low_or_high_mask;
-    uint8_t shift_amount = 0;
-    if (opcode.f2.reg_mem < 4) {
-      low_or_high_mask = 0x00ff;
-      shift_amount = 0;
-    } else {
-      low_or_high_mask = 0xff00;
-      shift_amount = 8;
-    }
-    registers[target_register_index] =
-        (registers[target_register_index] & ~low_or_high_mask) |
-        ((data << shift_amount) & low_or_high_mask);
-  }
-
-  // NOTE: SIMULATION Part ends.
+  simulate(opcode, opcode.f2.reg_mem, 0, is_wide, true, data, icode);
 
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %u", icode,
            lookup_array[opcode.f2.reg_mem], data);
@@ -555,6 +629,10 @@ int main(int argc, char *argv[]) {
 
       OpCodeHandlerMapping handler_map =
           opcode_to_handler_mapping[opcode_byte1.byte];
+
+      // if (opcode_byte1.byte == 0x81) {
+      //   printf("test");
+      // }
       uint8_t decoded_byte_count = handler_map.handler(
           instruction, opcode_byte1, buf_p, handler_map.instruction_name);
       buf_p += decoded_byte_count;
@@ -574,8 +652,12 @@ int main(int argc, char *argv[]) {
 
       printf("%s", instruction);
       if (1) {
-        printf("\t| ");
+        printf("\t; ");
         print_register_change();
+      }
+      if (1) {
+        printf("\t| ");
+        print_flags_change();
       }
       if (1) {
         printf("\t| ");
@@ -589,6 +671,7 @@ int main(int argc, char *argv[]) {
       fprintf(output_decoded_file_pointer, "%s\n", instruction);
       bytes_decoded_count += decoded_byte_count;
 
+      snapshot_flags_state();
       snapshot_registers_state();
     }
     if (bytes_read < BUFFER_SIZE) {
