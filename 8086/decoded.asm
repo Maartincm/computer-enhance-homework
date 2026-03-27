@@ -1,30 +1,27 @@
-mov ax, 10
-mov bx, 10
-mov cx, 10
-cmp bx, cx
-je $+7
-sub bx, word 5
-jb $+5
-sub cx, word 2
-loopnz $-17
-cmp bx, cx
-je $+7
-add ax, word 1
-jp $+7
-sub bx, word 5
-jb $+5
-sub cx, word 2
-loopnz $-17
-cmp bx, cx
-je $+7
-add ax, word 1
-jp $+7
-sub cx, word 2
-loopnz $-17
-cmp bx, cx
-je $+7
-add ax, word 1
-jp $+7
-sub bx, word 5
-jb $+5
-loopnz $-17
+mov dx, 6
+mov bp, 1000
+mov si, 0
+mov [bp + si], si
+add si, word 2
+cmp si, dx
+jnz $-7
+mov [bp + si], si
+add si, word 2
+cmp si, dx
+jnz $-7
+mov [bp + si], si
+add si, word 2
+cmp si, dx
+jnz $-7
+mov bx, 0
+mov si, dx
+sub bp, word 2
+add bx, [bp + si]
+sub si, word 2
+jnz $-5
+add bx, [bp + si]
+sub si, word 2
+jnz $-5
+add bx, [bp + si]
+sub si, word 2
+jnz $-5

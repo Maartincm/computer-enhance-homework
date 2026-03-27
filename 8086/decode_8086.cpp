@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <bitset>
+#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,15 @@
 #define MEM_BLOCK_SIZE 32
 
 #define ARRAY_SIZE(input) (sizeof(input) / sizeof((input)[0]))
+
+struct DataLocation {
+  uint16_t index;
+  enum typeenum : uint16_t {
+    IMMEDIATE,
+    MEMORY,
+    REGISTER,
+  } type;
+};
 
 namespace Flags {
 enum : uint16_t {
@@ -57,13 +67,17 @@ const char *register_array[] = {"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"};
 const char *register_array_wide[] = {"ax", "cx", "dx", "bx",
                                      "sp", "bp", "si", "di"};
 uint8_t sorted_reg_index[] = {0, 3, 1, 2, 4, 5, 6, 7, 0, 1, 2, 3};
-const char *address_calculation_array[] = {
+const char *address_calculation_names_array[] = {
     "bx + si", "bx + di", "bp + si", "bp + di", "si", "di", "bp", "bx"};
+uint8_t address_calculation_array[][7] = {
+    {2, 3, 6}, {2, 3, 7}, {2, 5, 6}, {2, 5, 6}, {1, 6}, {1, 7}, {1, 5}, {1, 3}};
 const char *icode_reg[] = {"add", "or",  "adc", "sbb",
                            "and", "sub", "unk", "cmp"};
 
 uint16_t registers[12]{};
 uint16_t registers_previous_state[12]{};
+uint8_t global_memory[1 << 16]{};
+uint16_t global_memory_pointer{};
 
 void snapshot_registers_state() {
   for (uint8_t i = 0; i < ARRAY_SIZE(registers); i++) {
@@ -164,8 +178,8 @@ int16_t unknown_opcode_handler(char *instruction_dest, OpCodeByte opcode,
 }
 
 inline uint8_t get_mem_block(char *mem_block_dest, OpCodeByte opcode,
-                             OpCodeByte opcode_byte2,
-                             uint8_t *bytecode_stream) {
+                             OpCodeByte opcode_byte2, uint8_t *bytecode_stream,
+                             uint16_t *memory_pointer) {
   uint8_t bytes_decoded_count = 0;
   int16_t displacement = 0;
   bool has_displacement =
@@ -188,37 +202,74 @@ inline uint8_t get_mem_block(char *mem_block_dest, OpCodeByte opcode,
   } else if (has_displacement && displacement) {
     const char *sign_str = displacement < 0 ? "-" : "+";
     snprintf(mem_block_dest, MEM_BLOCK_SIZE, "[%s %s %d]",
-             address_calculation_array[opcode_byte2.f2.reg_mem], sign_str,
+             address_calculation_names_array[opcode_byte2.f2.reg_mem], sign_str,
              displacement < 0 ? -displacement : displacement);
   } else {
     snprintf(mem_block_dest, MEM_BLOCK_SIZE, "[%s]",
-             address_calculation_array[opcode_byte2.f2.reg_mem]);
+             address_calculation_names_array[opcode_byte2.f2.reg_mem]);
+  }
+  *memory_pointer = displacement;
+  if (!is_direct_access) {
+    uint8_t *calc_array = address_calculation_array[opcode_byte2.f2.reg_mem];
+    for (uint8_t i = 0; i < calc_array[0]; i++) {
+      *memory_pointer += registers[calc_array[i + 1]];
+    }
   }
   return bytes_decoded_count;
 }
 
-void simulate(OpCodeByte opcode, uint8_t target_index, uint8_t source_index,
-              bool is_wide, bool is_immediate, uint32_t provided_data,
-              const char *icode) {
+void simulate(OpCodeByte opcode, DataLocation target, DataLocation source,
+              bool is_wide, uint32_t provided_data, const char *icode) {
   if (opcode.byte >> 2 == 0b100011) {
     // NOTE: We are dealing with segment registers
     if (opcode.f1.direction) {
-      target_index += 8;
+      target.index += 8;
     } else {
-      source_index += 8;
+      source.index += 8;
     }
   }
 
   uint32_t data;
-  if (is_immediate) {
+  switch (source.type) {
+  case (DataLocation::IMMEDIATE): {
     data = provided_data;
-  } else {
+    break;
+  }
+  case (DataLocation::REGISTER): {
     uint8_t shift_amount = 0;
-    if (!is_wide && source_index >= 4 && source_index < 8) {
-      source_index = source_index % 4;
+    if (!is_wide && source.index >= 4 && source.index < 8) {
+      source.index = source.index % 4;
       shift_amount = 8;
     }
-    data = registers[source_index] >> shift_amount;
+    data = registers[source.index] >> shift_amount;
+    break;
+  }
+  case (DataLocation::MEMORY): {
+    data = global_memory[source.index];
+    if (is_wide) {
+      data |= global_memory[source.index + 1] << 8;
+    }
+    break;
+  }
+  }
+
+  uint32_t existing_target_data;
+  switch (target.type) {
+  case (DataLocation::IMMEDIATE): {
+    assert(!"can not have an immediate target");
+    break;
+  }
+  case (DataLocation::REGISTER): {
+    existing_target_data = registers[target.index];
+    break;
+  }
+  case (DataLocation::MEMORY): {
+    existing_target_data = global_memory[target.index];
+    if (is_wide) {
+      existing_target_data |= global_memory[target.index + 1] << 8;
+    }
+    break;
+  }
   }
 
   uint32_t input_data;
@@ -229,43 +280,47 @@ void simulate(OpCodeByte opcode, uint8_t target_index, uint8_t source_index,
     // overwriting everything.
     uint16_t low_or_high_mask;
     uint8_t shift_amount = 0;
-    if (target_index < 4) {
+    if (target.index < 4) {
       low_or_high_mask = 0x00ff;
       shift_amount = 0;
     } else {
       low_or_high_mask = 0xff00;
       shift_amount = 8;
     }
-    if (target_index < 8) {
-      target_index = target_index % 4;
+    if (target.index < 8) {
+      target.index = target.index % 4;
     }
-    if (!is_immediate && !is_wide && source_index >= 4) {
+    if (!(target.type == DataLocation::IMMEDIATE) && !is_wide &&
+        source.index >= 4) {
       data >>= 8;
     }
-    input_data = (registers[target_index] & ~low_or_high_mask) |
+    input_data = (existing_target_data & ~low_or_high_mask) |
                  ((data << shift_amount) & low_or_high_mask);
   }
-  uint32_t old_reg_val = registers[target_index];
-  if ((int16_t)input_data == -90) {
-    printf("test");
+
+  uint16_t *target_array = target.type == DataLocation::REGISTER ? registers : (uint16_t *)global_memory;
+  if (target.type == DataLocation::MEMORY) {
+    uint8_t reminder = target.index % 2;
+    target.index = target.index / 2 + reminder;
   }
+
   if (icode[0] == 'm') {
-    registers[target_index] = input_data;
+    target_array[target.index] = input_data;
   } else {
     uint32_t res;
     switch (icode[0]) {
     case 'a': {
-      res = registers[target_index] + input_data;
-      registers[target_index] = res;
+      res = target_array[target.index] + input_data;
+      target_array[target.index] = res;
       break;
     }
     case 's': {
-      res = registers[target_index] - input_data;
-      registers[target_index] = res;
+      res = target_array[target.index] - input_data;
+      target_array[target.index] = res;
       break;
     }
     case 'c': {
-      res = registers[target_index] - input_data;
+      res = target_array[target.index] - input_data;
       break;
     }
     }
@@ -281,29 +336,29 @@ void simulate(OpCodeByte opcode, uint8_t target_index, uint8_t source_index,
       flags_register |= Flags::SIGN;
     }
     if (icode[0] == 'a') {
-      if (((old_reg_val & 0xf) + (input_data & 0xf)) & 0x10)
+      if (((existing_target_data & 0xf) + (input_data & 0xf)) & 0x10)
         flags_register |= Flags::AUX_CARRY;
-      if (((old_reg_val & 0xffff) + (input_data & 0xffff)) & 0x10000) {
+      if (((existing_target_data & 0xffff) + (input_data & 0xffff)) & 0x10000) {
         flags_register |= Flags::CARRY;
       }
       // if (is_signed != has_carry && (old_reg_val & 0x8000) == (input_data &
       // 0x8000))
-      if (!(old_reg_val & 0x8000) && !(input_data & 0x8000) && (res & 0x8000))
+      if (!(existing_target_data & 0x8000) && !(input_data & 0x8000) && (res & 0x8000))
         flags_register |= Flags::OVERFLOW;
-      if ((old_reg_val & 0x8000) && (input_data & 0x8000) && !(res & 0x8000))
+      if ((existing_target_data & 0x8000) && (input_data & 0x8000) && !(res & 0x8000))
         flags_register |= Flags::OVERFLOW;
     }
     if (icode[0] == 's' || icode[0] == 'c') {
-      if ((uint8_t)(old_reg_val & 0xf) < (uint8_t)(input_data & 0xf))
+      if ((uint8_t)(existing_target_data & 0xf) < (uint8_t)(input_data & 0xf))
         flags_register |= Flags::AUX_CARRY;
-      if (old_reg_val < input_data) {
+      if (existing_target_data < input_data) {
         flags_register |= Flags::CARRY;
       }
       // if (is_signed != has_carry && (old_reg_val & 0x8000) == (input_data &
       // 0x8000))
-      if (!(old_reg_val & 0x8000) && (input_data & 0x8000) && (res & 0x8000))
+      if (!(existing_target_data & 0x8000) && (input_data & 0x8000) && (res & 0x8000))
         flags_register |= Flags::OVERFLOW;
-      if ((old_reg_val & 0x8000) && !(input_data & 0x8000) && !(res & 0x8000))
+      if ((existing_target_data & 0x8000) && !(input_data & 0x8000) && !(res & 0x8000))
         flags_register |= Flags::OVERFLOW;
     }
     if (!(res & 0xff))
@@ -319,8 +374,8 @@ int16_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
   OpCodeByte opcode_byte2{*bytecode_stream++};
   uint8_t bytes_decoded_count = 1;
   char mem_block[MEM_BLOCK_SIZE]{};
-  bytes_decoded_count +=
-      get_mem_block(mem_block, opcode, opcode_byte2, bytecode_stream);
+  bytes_decoded_count += get_mem_block(mem_block, opcode, opcode_byte2,
+                                       bytecode_stream, &global_memory_pointer);
   bytecode_stream += bytes_decoded_count - 1;
   bool is_wide = opcode.f1.width;
   if (opcode.byte >> 2 == 0b100011) {
@@ -332,8 +387,6 @@ int16_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
   const char **target_lookup_array = source_lookup_array;
   const char *source;
   const char *target;
-  uint8_t source_index;
-  uint8_t target_index;
   if (opcode.byte >> 2 == 0b100011) {
     // NOTE: We are dealing with segment registers
     if (opcode.f1.direction) {
@@ -343,23 +396,34 @@ int16_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
     }
   }
 
+  DataLocation target_location{};
+  DataLocation source_location{};
+
   if (opcode_byte2.f2.mode == 0b11) {
-    source_index =
+    source_location.type = DataLocation::REGISTER;
+    target_location.type = DataLocation::REGISTER;
+    source_location.index =
         opcode.f1.direction ? opcode_byte2.f2.reg_mem : opcode_byte2.f2.reg;
-    target_index =
+    target_location.index =
         opcode.f1.direction ? opcode_byte2.f2.reg : opcode_byte2.f2.reg_mem;
-    source = source_lookup_array[source_index];
-    target = target_lookup_array[target_index];
+    source = source_lookup_array[source_location.index];
+    target = target_lookup_array[target_location.index];
   } else {
-    source_index = opcode.f1.direction ? -1 : opcode_byte2.f2.reg;
-    target_index = opcode.f1.direction ? opcode_byte2.f2.reg : -1;
+    source_location.type =
+        opcode.f1.direction ? DataLocation::MEMORY : DataLocation::REGISTER;
+    target_location.type =
+        opcode.f1.direction ? DataLocation::REGISTER : DataLocation::MEMORY;
+    source_location.index =
+        opcode.f1.direction ? global_memory_pointer : opcode_byte2.f2.reg;
+    target_location.index =
+        opcode.f1.direction ? opcode_byte2.f2.reg : global_memory_pointer;
     source = opcode.f1.direction ? mem_block
                                  : source_lookup_array[opcode_byte2.f2.reg];
     target = opcode.f1.direction ? target_lookup_array[opcode_byte2.f2.reg]
                                  : mem_block;
   }
 
-  simulate(opcode, target_index, source_index, is_wide, false, 0, icode);
+  simulate(opcode, target_location, source_location, is_wide, 0, icode);
 
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
            source);
@@ -373,8 +437,8 @@ int16_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
   OpCodeByte opcode_byte2{*bytecode_stream++};
   uint8_t bytes_decoded_count = 1;
   char mem_block[MEM_BLOCK_SIZE]{};
-  bytes_decoded_count +=
-      get_mem_block(mem_block, opcode, opcode_byte2, bytecode_stream);
+  bytes_decoded_count += get_mem_block(mem_block, opcode, opcode_byte2,
+                                       bytecode_stream, &global_memory_pointer);
   bytecode_stream += bytes_decoded_count - 1;
 
   uint16_t data = *bytecode_stream++;
@@ -401,21 +465,29 @@ int16_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
     else
       snprintf(immediate, sizeof(immediate), "byte %u", data);
   }
+
+  DataLocation target_location{};
+  DataLocation source_location{};
+  source_location.type = DataLocation::IMMEDIATE;
+
   const char *source = immediate;
   const char *target;
-  uint8_t target_index = -1;
   if (opcode_byte2.f2.mode == 0b11) {
     target = is_wide ? register_array_wide[opcode_byte2.f2.reg_mem]
                      : register_array[opcode_byte2.f2.reg_mem];
-    target_index = opcode_byte2.f2.reg_mem;
+    target_location.type = DataLocation::REGISTER;
+    target_location.index = opcode_byte2.f2.reg_mem;
   } else {
+    target_location.type = DataLocation::MEMORY;
+    target_location.index = global_memory_pointer;
     target = mem_block;
   }
   const char *actual_icode = (icode[0] == 'm' && icode[1] == 'o')
                                  ? icode
                                  : icode_reg[opcode_byte2.f2.reg];
 
-  simulate(opcode, target_index, 0, is_wide, true, data, actual_icode);
+  simulate(opcode, target_location, source_location, is_wide, data,
+           actual_icode);
 
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", actual_icode,
            target, source);
@@ -435,7 +507,9 @@ int16_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
     bytes_decoded_count++;
   }
 
-  simulate(opcode, opcode.f2.reg_mem, 0, is_wide, true, data, icode);
+  DataLocation source_location{0, DataLocation::IMMEDIATE};
+  DataLocation target_location{opcode.f2.reg_mem, DataLocation::REGISTER};
+  simulate(opcode, target_location, source_location, is_wide, data, icode);
 
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %u", icode,
            lookup_array[opcode.f2.reg_mem], data);
@@ -455,49 +529,22 @@ int16_t mov_mem_to_from_accum_handler(char *instruction_dest, OpCodeByte opcode,
   snprintf(mem_block, sizeof(mem_block), "[%u]", address);
   const char *source = opcode.f1.direction ? "ax" : mem_block;
   const char *target = opcode.f1.direction ? mem_block : "ax";
+
+  // TODO: simulate accum handlers. Also merge them together
+  // const char source_index = opcode.f1.direction ? 0 : mem_block;
+  // const char target_index = opcode.f1.direction ? mem_block : "ax";
+  // simulate(opcode, target_index, 0, is_wide, true, true, data, actual_icode);
+
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
            source);
   return bytes_decoded_count;
 }
 
-int16_t add_reg_mem_with_reg_handler(char *instruction_dest, OpCodeByte opcode,
-                                     uint8_t *bytecode_stream,
-                                     const char *icode) {
-  OpCodeByte opcode_byte2{*bytecode_stream++};
-  uint8_t bytes_decoded_count = 1;
-  char mem_block[MEM_BLOCK_SIZE]{};
-  bytes_decoded_count +=
-      get_mem_block(mem_block, opcode, opcode_byte2, bytecode_stream);
-  bytecode_stream += bytes_decoded_count - 1;
-  const char **lookup_array =
-      opcode.f1.width ? register_array_wide : register_array;
-  const char *source;
-  const char *target;
-  if (opcode_byte2.f2.mode == 0b11) {
-    source = opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg_mem]
-                                 : lookup_array[opcode_byte2.f2.reg];
-    target = opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg]
-                                 : lookup_array[opcode_byte2.f2.reg_mem];
-  } else {
-    source =
-        opcode.f1.direction ? mem_block : lookup_array[opcode_byte2.f2.reg];
-    target =
-        opcode.f1.direction ? lookup_array[opcode_byte2.f2.reg] : mem_block;
-  }
-  snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "add %s, %s", target,
-           source);
-  return bytes_decoded_count;
-}
-int16_t add_immediate_to_reg_mem_handler(char *instruction_dest,
-                                         OpCodeByte opcode,
-                                         uint8_t *bytecode_stream,
-                                         const char *icode) {
-  return 0;
-}
 int16_t add_immediate_to_accum_handler(char *instruction_dest,
                                        OpCodeByte opcode,
                                        uint8_t *bytecode_stream,
                                        const char *icode) {
+  // TODO: simulate accum handlers. Also merge them with the mov one
   int bytes_decoded_count = 1;
 
   int16_t data = *bytecode_stream++;
@@ -669,9 +716,6 @@ int main(int argc, char *argv[]) {
       OpCodeHandlerMapping handler_map =
           opcode_to_handler_mapping[opcode_byte1.byte];
 
-      // if (opcode_byte1.byte == 0x81) {
-      //   printf("test");
-      // }
       int16_t decoded_byte_count = handler_map.handler(
           instruction, opcode_byte1, buf_p, handler_map.instruction_name);
       buf_p += decoded_byte_count;
