@@ -15,7 +15,7 @@
 
 namespace Flags {
 enum : uint16_t {
-  CARRY = 0,
+  CARRY = 1 << 0,
   PARITY = 1 << 2,
   AUX_CARRY = 1 << 4,
   ZERO = 1 << 6,
@@ -45,7 +45,7 @@ union OpCodeByte {
     uint8_t mode : 2;
   } f2;
 };
-typedef uint8_t(OpCodeHandler)(char *, OpCodeByte, uint8_t *, const char *);
+typedef int16_t(OpCodeHandler)(char *, OpCodeByte, uint8_t *, const char *);
 struct OpCodeHandlerMapping {
   OpCodeHandler *handler;
   const char *instruction_name;
@@ -81,16 +81,18 @@ void print_flags_change() {
     if (cur_val != prev_val) {
       changed = true;
     }
-    if (!cur_val && prev_val) {
-      printf("%s", flag_names_array[i]);
-    }
   }
   if (changed) {
+    for (uint8_t i = 0; i < 16; i++) {
+      uint8_t prev_val = (previuos_flags_register >> i) & 0x01;
+      if (prev_val) {
+        printf("%s", flag_names_array[i]);
+      }
+    }
     printf(" -> ");
     for (uint8_t i = 0; i < 16; i++) {
       uint8_t cur_val = (flags_register >> i) & 0x01;
-      uint8_t prev_val = (previuos_flags_register >> i) & 0x01;
-      if (cur_val && !prev_val) {
+      if (cur_val) {
         printf("%s", flag_names_array[i]);
       }
     }
@@ -119,7 +121,7 @@ void print_register_change() {
   }
 }
 
-void print_registers() {
+void print_registers(uint32_t ip_final_position) {
   printf("==============================================\n");
   printf("Registers state\n");
   for (uint8_t i = 0; i < ARRAY_SIZE(registers); i++) {
@@ -130,6 +132,7 @@ void print_registers() {
       printf("\t%s: 0x%04x\n", segment_register_array[index], registers[i]);
     }
   }
+  printf("\tip: 0x%04x\n", ip_final_position);
   printf("==============================================\n");
 }
 
@@ -152,7 +155,7 @@ void print_bytes(uint8_t *bytes, uint32_t size, uint8_t column_width) {
 }
 void print_bytes(uint8_t *bytes, uint32_t size) { print_bytes(bytes, size, 8); }
 
-uint8_t unknown_opcode_handler(char *instruction_dest, OpCodeByte opcode,
+int16_t unknown_opcode_handler(char *instruction_dest, OpCodeByte opcode,
                                uint8_t *bytecode_stream, const char *icode) {
   printf("ERROR: Uknown opcode: ");
   print_bytes(&opcode.byte, 1);
@@ -194,9 +197,9 @@ inline uint8_t get_mem_block(char *mem_block_dest, OpCodeByte opcode,
   return bytes_decoded_count;
 }
 
-void simulate(OpCodeByte opcode, uint8_t target_index,
-              uint8_t source_index, bool is_wide, bool is_immediate,
-              uint32_t provided_data, const char *icode) {
+void simulate(OpCodeByte opcode, uint8_t target_index, uint8_t source_index,
+              bool is_wide, bool is_immediate, uint32_t provided_data,
+              const char *icode) {
   if (opcode.byte >> 2 == 0b100011) {
     // NOTE: We are dealing with segment registers
     if (opcode.f1.direction) {
@@ -242,6 +245,10 @@ void simulate(OpCodeByte opcode, uint8_t target_index,
     input_data = (registers[target_index] & ~low_or_high_mask) |
                  ((data << shift_amount) & low_or_high_mask);
   }
+  uint32_t old_reg_val = registers[target_index];
+  if ((int16_t)input_data == -90) {
+    printf("test");
+  }
   if (icode[0] == 'm') {
     registers[target_index] = input_data;
   } else {
@@ -270,25 +277,42 @@ void simulate(OpCodeByte opcode, uint8_t target_index,
     }
     if (ones_count % 2 == 0)
       flags_register |= Flags::PARITY;
-    if (!res)
-      flags_register |= Flags::ZERO;
-    if (res & 0x8000)
+    if (res & 0x8000) {
       flags_register |= Flags::SIGN;
-    if (res & 0xffff0000)
-      flags_register |= Flags::OVERFLOW;
-    if (icode[0] == 'a' && res & 0x10)
-      flags_register |= Flags::AUX_CARRY;
-    if (icode[0] == 'a' && res & 0x10000)
-      flags_register |= Flags::CARRY;
-    if (icode[0] == 's' && res & 0x8)
-      flags_register |= Flags::AUX_CARRY;
-    if (icode[0] == 's' && res & 0x8000)
-      flags_register |= Flags::CARRY;
+    }
+    if (icode[0] == 'a') {
+      if (((old_reg_val & 0xf) + (input_data & 0xf)) & 0x10)
+        flags_register |= Flags::AUX_CARRY;
+      if (((old_reg_val & 0xffff) + (input_data & 0xffff)) & 0x10000) {
+        flags_register |= Flags::CARRY;
+      }
+      // if (is_signed != has_carry && (old_reg_val & 0x8000) == (input_data &
+      // 0x8000))
+      if (!(old_reg_val & 0x8000) && !(input_data & 0x8000) && (res & 0x8000))
+        flags_register |= Flags::OVERFLOW;
+      if ((old_reg_val & 0x8000) && (input_data & 0x8000) && !(res & 0x8000))
+        flags_register |= Flags::OVERFLOW;
+    }
+    if (icode[0] == 's' || icode[0] == 'c') {
+      if ((uint8_t)(old_reg_val & 0xf) < (uint8_t)(input_data & 0xf))
+        flags_register |= Flags::AUX_CARRY;
+      if (old_reg_val < input_data) {
+        flags_register |= Flags::CARRY;
+      }
+      // if (is_signed != has_carry && (old_reg_val & 0x8000) == (input_data &
+      // 0x8000))
+      if (!(old_reg_val & 0x8000) && (input_data & 0x8000) && (res & 0x8000))
+        flags_register |= Flags::OVERFLOW;
+      if ((old_reg_val & 0x8000) && !(input_data & 0x8000) && !(res & 0x8000))
+        flags_register |= Flags::OVERFLOW;
+    }
+    if (!(res & 0xff))
+      flags_register |= Flags::ZERO;
   }
   // NOTE: SIMULATION Part ends.
 }
 
-uint8_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
+int16_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
                                        OpCodeByte opcode,
                                        uint8_t *bytecode_stream,
                                        const char *icode) {
@@ -342,7 +366,7 @@ uint8_t mov_reg_mem_to_reg_mem_handler(char *instruction_dest,
   return bytes_decoded_count;
 }
 
-uint8_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
+int16_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
                                          OpCodeByte opcode,
                                          uint8_t *bytecode_stream,
                                          const char *icode) {
@@ -398,7 +422,7 @@ uint8_t mov_immediate_to_reg_mem_handler(char *instruction_dest,
   return bytes_decoded_count;
 }
 
-uint8_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
+int16_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
                                      uint8_t *bytecode_stream,
                                      const char *icode) {
   int bytes_decoded_count = 1;
@@ -418,7 +442,7 @@ uint8_t mov_immediate_to_reg_handler(char *instruction_dest, OpCodeByte opcode,
   return bytes_decoded_count;
 }
 
-uint8_t mov_mem_to_from_accum_handler(char *instruction_dest, OpCodeByte opcode,
+int16_t mov_mem_to_from_accum_handler(char *instruction_dest, OpCodeByte opcode,
                                       uint8_t *bytecode_stream,
                                       const char *icode) {
   int bytes_decoded_count = 1;
@@ -436,7 +460,7 @@ uint8_t mov_mem_to_from_accum_handler(char *instruction_dest, OpCodeByte opcode,
   return bytes_decoded_count;
 }
 
-uint8_t add_reg_mem_with_reg_handler(char *instruction_dest, OpCodeByte opcode,
+int16_t add_reg_mem_with_reg_handler(char *instruction_dest, OpCodeByte opcode,
                                      uint8_t *bytecode_stream,
                                      const char *icode) {
   OpCodeByte opcode_byte2{*bytecode_stream++};
@@ -464,13 +488,13 @@ uint8_t add_reg_mem_with_reg_handler(char *instruction_dest, OpCodeByte opcode,
            source);
   return bytes_decoded_count;
 }
-uint8_t add_immediate_to_reg_mem_handler(char *instruction_dest,
+int16_t add_immediate_to_reg_mem_handler(char *instruction_dest,
                                          OpCodeByte opcode,
                                          uint8_t *bytecode_stream,
                                          const char *icode) {
   return 0;
 }
-uint8_t add_immediate_to_accum_handler(char *instruction_dest,
+int16_t add_immediate_to_accum_handler(char *instruction_dest,
                                        OpCodeByte opcode,
                                        uint8_t *bytecode_stream,
                                        const char *icode) {
@@ -493,16 +517,31 @@ uint8_t add_immediate_to_accum_handler(char *instruction_dest,
   return bytes_decoded_count;
 }
 
-uint8_t jump_handler(char *instruction_dest, OpCodeByte opcode,
+int16_t jump_handler(char *instruction_dest, OpCodeByte opcode,
                      uint8_t *bytecode_stream, const char *icode) {
-  int bytes_decoded_count = 1;
-
+  uint16_t bytes_decoded = 1;
   int8_t offset = *bytecode_stream++;
   offset += 2;
   const char sign_str = offset < 0 ? '-' : '+';
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s $%c%d", icode, sign_str,
            offset < 0 ? -offset : offset);
-  return bytes_decoded_count;
+  bool should_jump = false;
+  should_jump |=
+      (std::strncmp(icode, "jnz", 3) == 0 && !(flags_register & Flags::ZERO));
+  should_jump |=
+      (std::strncmp(icode, "je", 2) == 0 && (flags_register & Flags::ZERO));
+  should_jump |=
+      (std::strncmp(icode, "jp", 2) == 0 && (flags_register & Flags::PARITY));
+  should_jump |=
+      (std::strncmp(icode, "jb", 2) == 0 && (flags_register & Flags::CARRY));
+  if (!std::strncmp(icode, "loopnz", 6)) {
+    registers[1] -= 1;
+    should_jump |= registers[1] != 0;
+  }
+  if (should_jump) {
+    return offset - 2 + bytes_decoded;
+  }
+  return bytes_decoded;
 }
 
 int main(int argc, char *argv[]) {
@@ -633,7 +672,7 @@ int main(int argc, char *argv[]) {
       // if (opcode_byte1.byte == 0x81) {
       //   printf("test");
       // }
-      uint8_t decoded_byte_count = handler_map.handler(
+      int16_t decoded_byte_count = handler_map.handler(
           instruction, opcode_byte1, buf_p, handler_map.instruction_name);
       buf_p += decoded_byte_count;
       decoded_byte_count++;
@@ -654,6 +693,11 @@ int main(int argc, char *argv[]) {
       if (1) {
         printf("\t; ");
         print_register_change();
+      }
+      if (1) {
+        printf("\t| ");
+        printf("ip: 0x%04x -> 0x%04x", bytes_decoded_count,
+               bytes_decoded_count + decoded_byte_count);
       }
       if (1) {
         printf("\t| ");
@@ -689,7 +733,7 @@ int main(int argc, char *argv[]) {
     printf("==============================================\n");
   }
 
-  print_registers();
+  print_registers(bytes_decoded_count);
 
   return 0;
 }

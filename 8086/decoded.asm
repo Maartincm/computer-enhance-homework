@@ -1,14 +1,30 @@
-add bx, word 30000
-add bx, word 10000
-sub bx, word 5000
-sub bx, word 5000
-mov bx, 1
-mov cx, 100
-add bx, cx
-mov dx, 10
-sub cx, dx
-add bx, word 40000
-add cx, word -90
-mov sp, 99
-mov bp, 98
-cmp bp, sp
+mov ax, 10
+mov bx, 10
+mov cx, 10
+cmp bx, cx
+je $+7
+sub bx, word 5
+jb $+5
+sub cx, word 2
+loopnz $-17
+cmp bx, cx
+je $+7
+add ax, word 1
+jp $+7
+sub bx, word 5
+jb $+5
+sub cx, word 2
+loopnz $-17
+cmp bx, cx
+je $+7
+add ax, word 1
+jp $+7
+sub cx, word 2
+loopnz $-17
+cmp bx, cx
+je $+7
+add ax, word 1
+jp $+7
+sub bx, word 5
+jb $+5
+loopnz $-17
