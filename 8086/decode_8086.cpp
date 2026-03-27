@@ -264,7 +264,11 @@ void simulate(OpCodeByte opcode, DataLocation target, DataLocation source,
     break;
   }
   case (DataLocation::MEMORY): {
-    existing_target_data = global_memory[target.index];
+    if (target.index % 2) {
+      existing_target_data = global_memory[target.index - 1];
+    } else {
+      existing_target_data = global_memory[target.index];
+    }
     if (is_wide) {
       existing_target_data |= global_memory[target.index + 1] << 8;
     }
@@ -280,28 +284,39 @@ void simulate(OpCodeByte opcode, DataLocation target, DataLocation source,
     // overwriting everything.
     uint16_t low_or_high_mask;
     uint8_t shift_amount = 0;
-    if (target.index < 4) {
-      low_or_high_mask = 0x00ff;
-      shift_amount = 0;
+    if (target.type == DataLocation::MEMORY) {
+      bool high_bits = (target.index % 2);
+      if (high_bits) {
+        shift_amount = 8;
+        low_or_high_mask = 0xff00;
+      } else {
+        low_or_high_mask = 0x00ff;
+      }
     } else {
-      low_or_high_mask = 0xff00;
-      shift_amount = 8;
-    }
-    if (target.index < 8) {
-      target.index = target.index % 4;
-    }
-    if (!(target.type == DataLocation::IMMEDIATE) && !is_wide &&
-        source.index >= 4) {
-      data >>= 8;
+      if (target.index < 4) {
+        low_or_high_mask = 0x00ff;
+        shift_amount = 0;
+      } else {
+        low_or_high_mask = 0xff00;
+        shift_amount = 8;
+      }
+      if (target.index < 8) {
+        target.index = target.index % 4;
+      }
+      if (!(target.type == DataLocation::IMMEDIATE) && !is_wide &&
+          source.index >= 4) {
+        data >>= 8;
+      }
     }
     input_data = (existing_target_data & ~low_or_high_mask) |
                  ((data << shift_amount) & low_or_high_mask);
   }
 
-  uint16_t *target_array = target.type == DataLocation::REGISTER ? registers : (uint16_t *)global_memory;
+  uint16_t *target_array = target.type == DataLocation::REGISTER
+                               ? registers
+                               : (uint16_t *)global_memory;
   if (target.type == DataLocation::MEMORY) {
-    uint8_t reminder = target.index % 2;
-    target.index = target.index / 2 + reminder;
+    target.index = target.index / 2;
   }
 
   if (icode[0] == 'm') {
@@ -343,9 +358,11 @@ void simulate(OpCodeByte opcode, DataLocation target, DataLocation source,
       }
       // if (is_signed != has_carry && (old_reg_val & 0x8000) == (input_data &
       // 0x8000))
-      if (!(existing_target_data & 0x8000) && !(input_data & 0x8000) && (res & 0x8000))
+      if (!(existing_target_data & 0x8000) && !(input_data & 0x8000) &&
+          (res & 0x8000))
         flags_register |= Flags::OVERFLOW;
-      if ((existing_target_data & 0x8000) && (input_data & 0x8000) && !(res & 0x8000))
+      if ((existing_target_data & 0x8000) && (input_data & 0x8000) &&
+          !(res & 0x8000))
         flags_register |= Flags::OVERFLOW;
     }
     if (icode[0] == 's' || icode[0] == 'c') {
@@ -356,9 +373,11 @@ void simulate(OpCodeByte opcode, DataLocation target, DataLocation source,
       }
       // if (is_signed != has_carry && (old_reg_val & 0x8000) == (input_data &
       // 0x8000))
-      if (!(existing_target_data & 0x8000) && (input_data & 0x8000) && (res & 0x8000))
+      if (!(existing_target_data & 0x8000) && (input_data & 0x8000) &&
+          (res & 0x8000))
         flags_register |= Flags::OVERFLOW;
-      if ((existing_target_data & 0x8000) && !(input_data & 0x8000) && !(res & 0x8000))
+      if ((existing_target_data & 0x8000) && !(input_data & 0x8000) &&
+          !(res & 0x8000))
         flags_register |= Flags::OVERFLOW;
     }
     if (!(res & 0xff))
@@ -559,6 +578,11 @@ int16_t add_immediate_to_accum_handler(char *instruction_dest,
   snprintf(mem_block, sizeof(mem_block), "%d", data);
   const char *source = opcode.f1.direction ? reg : mem_block;
   const char *target = opcode.f1.direction ? mem_block : reg;
+
+  DataLocation target_location = {0, DataLocation::REGISTER};
+  DataLocation source_location = {0, DataLocation::IMMEDIATE};
+  simulate(opcode, target_location, source_location, opcode.f1.width, data, icode);
+
   snprintf(instruction_dest, INSTRUCTION_DEST_SIZE, "%s %s, %s", icode, target,
            source);
   return bytes_decoded_count;
@@ -581,9 +605,21 @@ int16_t jump_handler(char *instruction_dest, OpCodeByte opcode,
       (std::strncmp(icode, "jp", 2) == 0 && (flags_register & Flags::PARITY));
   should_jump |=
       (std::strncmp(icode, "jb", 2) == 0 && (flags_register & Flags::CARRY));
-  if (!std::strncmp(icode, "loopnz", 6)) {
+  should_jump |=
+      (std::strncmp(icode, "js", 2) == 0 && (flags_register & Flags::SIGN));
+  should_jump |=
+      (std::strncmp(icode, "jo", 2) == 0 && (flags_register & Flags::OVERFLOW));
+  should_jump |=
+      (std::strncmp(icode, "jno", 3) == 0 && !(flags_register & Flags::OVERFLOW));
+  should_jump |=
+      (std::strncmp(icode, "jns", 3) == 0 && !(flags_register & Flags::SIGN));
+  if (!std::strncmp(icode, "loop", 6)) {
     registers[1] -= 1;
     should_jump |= registers[1] != 0;
+  }
+  if (!std::strncmp(icode, "loopnz", 6)) {
+    registers[1] -= 1;
+    should_jump |= registers[1] != 0 && !(flags_register & Flags::ZERO);
   }
   if (should_jump) {
     return offset - 2 + bytes_decoded;
@@ -778,6 +814,10 @@ int main(int argc, char *argv[]) {
   }
 
   print_registers(bytes_decoded_count);
+
+  const char mem_dump_filepath[] = "mem_dump.data";
+  FILE *mem_dump_pointer = std::fopen(mem_dump_filepath, "w");
+  fwrite(global_memory, sizeof(global_memory), 1, mem_dump_pointer);
 
   return 0;
 }
