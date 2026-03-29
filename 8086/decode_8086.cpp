@@ -816,7 +816,7 @@ int main(int argc, char *argv[]) {
   print_registers(bytes_decoded_count);
 
   const char mem_dump_filepath[] = "mem_dump.data";
-  FILE *mem_dump_pointer = std::fopen(mem_dump_filepath, "w");
+  FILE *mem_dump_pointer = std::fopen(mem_dump_filepath, "wb");
   fwrite(global_memory, sizeof(global_memory), 1, mem_dump_pointer);
 
   return 0;
