@@ -77,9 +77,9 @@ int main(int argc, char *argv[]) {
 
     setup_rand(seed);
     char json_output_filename[128];
-    sprintf(json_output_filename, "haversine_%ld_points.json", points_to_generate);
+    sprintf(json_output_filename, "output/haversine_%ld_points.json", points_to_generate);
     char f64_output_filename[128];
-    sprintf(f64_output_filename, "haversine_%ld_points.f64", points_to_generate);
+    sprintf(f64_output_filename, "output/haversine_%ld_points.f64", points_to_generate);
 
     FILE *json_fp = fopen(json_output_filename, "wb");
     FILE *f64_fp = fopen(f64_output_filename, "wb");
