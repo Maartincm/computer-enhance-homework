@@ -55,14 +55,14 @@ struct Proc {
   Header *header_loc;
 };
 
-void *parse(const char *input) {
-  void *base_data = malloc(1024);
+Header *parse(const char *input) {
+  Header *base_data = (Header *)malloc(1024);
+  Header *header_loc = base_data;
   Stack::Stack stack = Stack::create();
-  char ch;
   ParseState state = STATE_START;
-  Header *header_loc = (Header *)base_data;
   u8 *data_p;
   u64 seen_count = 0;
+  char ch;
   do {
     ch = *input++;
     switch (state) {
@@ -104,10 +104,16 @@ void *parse(const char *input) {
         data_p = (u8 *)(header_loc + 1);
         break;
       }
+      case '}': {
+        state = STATE_OBJECT_VALUE_DONE;
+        seen_count--;
+        input--;
+        break;
+      }
       default: {
         printf("Invalid JSON char at %lu while processing object expecting key "
-               "start\n",
-               seen_count);
+               "start. Char was `%c`\n",
+               seen_count, ch);
         throw std::runtime_error("Invalid JSON");
       }
       }
@@ -296,9 +302,25 @@ void *parse(const char *input) {
         Proc *p_value = (Proc *)Stack::pop(&stack, sizeof(Proc));
         p_value->header_loc->next_inner_header = header_loc;
         p_value->header_loc->next_header = header_loc;
-        Proc *p_key = (Proc *)Stack::pop(&stack, sizeof(Proc));
-        p_key->header_loc->next_header = header_loc;
-        state = STATE_OBJECT_VALUE_DONE;
+
+        Proc *p_parent = (Proc *)Stack::pop(&stack, sizeof(Proc));
+        if (p_parent->header_loc->type == JSON::ARRAY) {
+          if (ch == '}') {
+            throw std::runtime_error("Invalid JSON");
+          }
+          p_parent->header_loc->count++;
+          p_parent->header_loc->size += p_value->header_loc->size;
+          Stack::push(&stack, p_parent, sizeof(Proc));
+          state = STATE_ARRAY;
+        } else if (p_parent->header_loc->type == JSON::KEY) {
+          if (ch == ']') {
+            throw std::runtime_error("Invalid JSON");
+          }
+          p_parent->header_loc->next_header = header_loc;
+          state = STATE_OBJECT_VALUE_DONE;
+        } else {
+          throw std::runtime_error("Invalid JSON");
+        }
         break;
       }
       default: {
@@ -329,6 +351,7 @@ void *parse(const char *input) {
       case ' ':
       case '\n':
       case '}':
+      case ']':
       case ',': {
         *data_p++ = '\0';
         Proc *p_value = (Proc *)Stack::pop(&stack, sizeof(Proc));
@@ -342,7 +365,8 @@ void *parse(const char *input) {
         }
         u64 *num_ptr = (u64 *)num_str;
         if (is_float) {
-          *num_ptr = atof(num_str);
+          f64 *fnum_ptr = (f64 *)num_ptr;
+          *fnum_ptr = atof(num_str);
           p_value->header_loc->type = FLOAT;
         } else {
           *num_ptr = std::atoi(num_str);
@@ -357,18 +381,33 @@ void *parse(const char *input) {
         // TODO: Stack peek to get object proc -> header and increase pair count
         p_value->header_loc->next_header = header_loc;
 
-        Proc *p_key = (Proc *)Stack::pop(&stack, sizeof(Proc));
-        p_key->header_loc->next_header = header_loc;
+        Proc *p_parent = (Proc *)Stack::pop(&stack, sizeof(Proc));
+        if (p_parent->header_loc->type == JSON::ARRAY) {
+          if (ch == '}') {
+            throw std::runtime_error("Invalid JSON");
+          }
+          p_parent->header_loc->count++;
+          p_parent->header_loc->size += p_value->header_loc->size;
+          Stack::push(&stack, p_parent, sizeof(Proc));
+          state = STATE_ARRAY;
+        } else if (p_parent->header_loc->type == JSON::KEY) {
+          if (ch == ']') {
+            throw std::runtime_error("Invalid JSON");
+          }
+          p_parent->header_loc->next_header = header_loc;
+          state = STATE_OBJECT_VALUE_DONE;
+        } else {
+          throw std::runtime_error("Invalid JSON");
+        }
 
-        state = STATE_OBJECT_VALUE_DONE;
         input--;
         seen_count--;
         break;
       }
       default: {
-        printf("Invalid JSON char at %lu while processing object after value "
-               "was done\n",
-               seen_count);
+        printf("Invalid JSON char at %lu while processing numeric value. Char "
+               "was `%c`\n",
+               seen_count, ch);
         throw std::runtime_error("Invalid JSON");
       }
       }
@@ -390,20 +429,29 @@ void *parse(const char *input) {
         state = p->state;
         if (state == STATE_START) {
           return base_data;
-        } else if (state == STATE_OBJECT_EXPECTING_VALUE) {
+        }
+        if (state == STATE_OBJECT_EXPECTING_VALUE) {
           state = STATE_OBJECT_VALUE_DONE;
-          Proc *p_key = (Proc *)Stack::pop(&stack, sizeof(Proc));
-          p_key->header_loc->next_inner_header = p->header_loc;
-          p_key->header_loc->next_header = header_loc;
+          Proc *p_parent = (Proc *)Stack::pop(&stack, sizeof(Proc));
+          p_parent->header_loc->next_inner_header = p->header_loc;
+          p_parent->header_loc->next_header = header_loc;
         } else if (state == STATE_ARRAY) {
+          Proc *p_parent = (Proc *)Stack::peek(&stack, sizeof(Proc));
+          p_parent->header_loc->count++;
+          p_parent->header_loc->size += p->header_loc->size;
           state = STATE_ARRAY;
+        }
+        else {
+          throw std::runtime_error("Invalid JSON");
         }
         p->header_loc->next_header = header_loc;
         // p->header_loc->next_inner_header = header_loc;
         break;
       }
       case ',': {
-        state = STATE_OBJECT;
+        Proc *object_p = (Proc *)Stack::peek(&stack, sizeof(Proc));
+        state =
+            object_p->header_loc->type == OBJECT ? STATE_OBJECT : STATE_ARRAY;
         break;
       }
       default: {
@@ -415,26 +463,29 @@ void *parse(const char *input) {
       }
       break;
     }
+    case STATE_NONE: {
+      throw std::runtime_error("Invalid JSON");
+      break;
+    }
     }
     seen_count++;
   } while (ch != '\0');
   return base_data;
 }
 
-Type get_type(void *data) {
+Type get_type(Header *data) {
   Header *head = (Header *)data;
   return head->type;
 }
 
-Header *get_value_header(void *data, const char *lookup_key) {
-  Types data_type{get_type(data)};
+Header *get_value_header(Header *object_header, const char *lookup_key) {
+  Types data_type{get_type(object_header)};
   if (data_type != Types::OBJECT) {
     printf("Trying to get value type for non object json data (type was "
            "`%ld`)\n",
            data_type);
     throw std::runtime_error("Invalid JSON");
   }
-  Header *object_header = (Header *)data;
   Header *key_header = object_header->next_inner_header;
   Header *value_header = 0;
   for (u32 i = 0; i < object_header->count; i++) {
@@ -453,43 +504,52 @@ Header *get_value_header(void *data, const char *lookup_key) {
   return value_header;
 }
 
-char *get_value_string(void *data, const char *lookup_key) {
+Header *get_array_elem_header(Header *array_header, u64 index) {
+  Types data_type{get_type(array_header)};
+  if (data_type != Types::ARRAY) {
+    printf("Trying to get element from non array json data (type was `%ld`)\n",
+           data_type);
+    throw std::runtime_error("Invalid JSON");
+  }
+  if (index < 0 || index > array_header->count) {
+    printf("Array out of index in JSON object. Index was `%lu`\n", index);
+    throw std::runtime_error("Array out of index in JSON object.");
+  }
+  Header *value_header = array_header->next_inner_header;
+  for (u32 i = 0; i < index; i++) {
+    value_header = value_header->next_header;
+  }
+  return value_header;
+}
+
+char *get_value_string(Header *data, const char *lookup_key) {
   Header *value_header = get_value_header(data, lookup_key);
   return (char *)(value_header + 1);
 }
 
-u64 get_value_f64(void *data, const char *lookup_key) {
+f64 get_value_f64(Header *data, const char *lookup_key) {
   Header *value_header = get_value_header(data, lookup_key);
   return *(f64 *)(value_header + 1);
 }
 
-u64 get_value_u64(void *data, const char *lookup_key) {
+u64 get_value_u64(Header *data, const char *lookup_key) {
   Header *value_header = get_value_header(data, lookup_key);
   return *(u64 *)(value_header + 1);
-  // u64 result;
-  // Types data_type{get_type(data)};
-  // if (data_type != Types::OBJECT) {
-  //   printf("Trying to get value type for non object json data (type was "
-  //          "`%ld`)\n",
-  //          data_type);
-  //   throw std::runtime_error("Invalid JSON");
-  // }
-  // Header *object_header = (Header *)data;
-  // Header *key_header = object_header + 1;
-  // for (u32 i = 0; i < object_header->count; i++) {
-  //   char *key_data = (char *)(key_header + 1);
-  //   Header *value_header =
-  //       (Header *)((u8 *)key_header + key_header->size + sizeof(Header));
-  //   if (strcmp(key_data, lookup_key)) {
-  //     key_header =
-  //         (Header *)((u8 *)value_header + value_header->size +
-  //         sizeof(Header));
-  //   } else {
-  //     result = *(u64 *)(value_header + 1);
-  //     break;
-  //   }
-  // }
-  // return result;
+}
+
+char *get_array_elem_string(Header *data, u64 index) {
+  Header *value_header = get_array_elem_header(data, index);
+  return (char *)(value_header + 1);
+}
+
+f64 get_array_elem_f64(Header *data, u64 index) {
+  Header *value_header = get_array_elem_header(data, index);
+  return *(f64 *)(value_header + 1);
+}
+
+u64 get_array_elem_u64(Header *data, u64 index) {
+  Header *value_header = get_array_elem_header(data, index);
+  return *(u64 *)(value_header + 1);
 }
 
 } // namespace JSON
