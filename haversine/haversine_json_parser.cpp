@@ -55,8 +55,8 @@ struct Proc {
   Header *header_loc;
 };
 
-Header *parse(const char *input) {
-  Header *base_data = (Header *)malloc(1024);
+Header *parse(const char *input, u64 size) {
+  Header *base_data = (Header *)malloc(size);
   Header *header_loc = base_data;
   Stack::Stack stack = Stack::create();
   ParseState state = STATE_START;
@@ -471,6 +471,10 @@ Header *parse(const char *input) {
     seen_count++;
   } while (ch != '\0');
   return base_data;
+}
+
+Header *parse(const char *input) {
+  return parse(input, 1<<20);
 }
 
 Type get_type(Header *data) {

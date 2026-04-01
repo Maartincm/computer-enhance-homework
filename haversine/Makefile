@@ -23,10 +23,13 @@ COMMON_CPP_FLAGS=-Wall $(DEBUG_FLAG) $(OPTIMIZATION_FLAG) -I/usr/local/include
 
 LINK_FLAGS=
 
-MAIN_CPP=haversine_json_generator.cpp
+MAIN_CPP=
 EXTRA_CPP=
 
-build:
-	$(CPP) $(COMMON_CPP_FLAGS) $(SWITCHES) -o haversine_json_generator $(MAIN_CPP) $(EXTRA_CPP) $(LINK_FLAGS)
+build-generator:
+	$(CPP) $(COMMON_CPP_FLAGS) $(SWITCHES) -o haversine_json_generator haversine_json_generator.cpp $(EXTRA_CPP) $(LINK_FLAGS)
 
-.PHONY: build
+build-processor:
+	$(CPP) $(COMMON_CPP_FLAGS) $(SWITCHES) -o haversine_process haversine_process.cpp $(EXTRA_CPP) $(LINK_FLAGS)
+
+.PHONY: build-processor

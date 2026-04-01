@@ -1,39 +1,16 @@
-#include <chrono>
 #include <cstdio>
-#include <ctime>
 #include <random>
-#include <ratio>
 
 #include "haversine_types.h"
 
 #include "listing_0065_haversine_formula.cpp"
+#include "haversine_timing.cpp"
 
 #define EARTH_RADIUS 6372.8
-
-struct TimeMeasurement {
-    std::chrono::time_point<std::chrono::steady_clock> start_wall;
-    std::chrono::time_point<std::chrono::steady_clock> end_wall;
-    std::clock_t start_cpu;
-    std::clock_t end_cpu;
-    f64 elapsed_wall_ms;
-    f64 elapsed_cpu_ms;
-};
 
 std::mt19937_64 engine;
 std::uniform_real_distribution<f64> global_dist(-180L, 180L);
 std::uniform_real_distribution<f64> dist(-180L, 180L);
-
-void timing_start(TimeMeasurement *timings) {
-    timings->start_cpu = std::clock();
-    timings->start_wall = std::chrono::steady_clock::now();
-}
-
-void timing_end(TimeMeasurement *timings) {
-    timings->end_cpu = std::clock();
-    timings->end_wall = std::chrono::steady_clock::now();
-    timings->elapsed_wall_ms = std::chrono::duration<f64, std::milli>(timings->end_wall - timings->start_wall).count();
-    timings->elapsed_cpu_ms = 1000.0 * (timings->end_cpu - timings->start_cpu) / CLOCKS_PER_SEC;
-}
 
 
 void setup_rand(u32 seed) {
@@ -114,11 +91,12 @@ int main(int argc, char *argv[]) {
     fseek(json_fp, -2, SEEK_CUR);
     fprintf(json_fp, "\n]}\n");
 
-    fwrite(&sum, sizeof(sum), 1, f64_fp);
     timing_end(&timings);
 
     f64 haversine_average = sum / (f64)points_to_generate;
     printf("\nAverage of the haversine sum: %.16f\n", haversine_average);
+
+    fwrite(&haversine_average, sizeof(haversine_average), 1, f64_fp);
 
     printf("Total elapsed time: (CPU: %.4f ms | Wall: %.4f ms)\n", timings.elapsed_cpu_ms, timings.elapsed_wall_ms);
 
