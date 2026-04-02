@@ -50,6 +50,9 @@ int main(int argc, char *argv[]) {
   printf("\nExpected haversine average: %.16f\n", total_expected_result);
 
   printf("\n\nProcessing points from JSON file...\n");
+  u64 cpu_freq = guess_cpu_frequency();
+  printf("\n\nCPU Freq: %lu\n", cpu_freq);
+
   TimeMeasurement timings{};
   timing_start(&timings);
   TimeMeasurement json_load_timings = timings;
@@ -72,6 +75,11 @@ int main(int argc, char *argv[]) {
     f64 f3 = JSON::get_value_f64(point_object, "x1");
     f64 f4 = JSON::get_value_f64(point_object, "y1");
     f64 haversine_result = ReferenceHaversine(f1, f2, f3, f4, EARTH_RADIUS);
+    sum += haversine_result;
+    point_object = point_object->next_header;
+
+#define USE_ANSWERS_FILE 0
+#if USE_ANSWERS_FILE
     fseek(answers_file_pointer, point_index * sizeof(f64), SEEK_SET);
     f64 expected_result;
     fread(&expected_result, sizeof(f64), 1, answers_file_pointer);
@@ -82,7 +90,10 @@ int main(int argc, char *argv[]) {
           std::to_string(expected_result) + "`. Actual result was `" +
           std::to_string(haversine_result) + "`");
     }
-    sum += haversine_result;
+#endif
+
+#define PRINT_PROGRESS 0
+#if PRINT_PROGRESS
     if (point_index == next_checkpoint) {
       timing_end(&batch_timings);
       printf("\tPoints processed: %lu | This batch took: (CPU: %.4f ms | Wall: "
@@ -92,7 +103,8 @@ int main(int argc, char *argv[]) {
       next_checkpoint += base_checkpoint;
       timing_start(&batch_timings);
     }
-    point_object = point_object->next_header;
+#endif
+
   }
   timing_end(&haversine_compute_timings);
   timing_end(&timings);
@@ -100,13 +112,24 @@ int main(int argc, char *argv[]) {
   f64 haversine_average = sum / (f64)pairs_array->count;
   printf("\nAverage of the haversine sum: %.16f\n", haversine_average);
 
+  u64 total_ticks = timings.elapsed_cpu_ticks;
   printf("\nTotal elapsed time: (CPU: %.4f ms | Wall: %.4f ms)\n",
          timings.elapsed_cpu_ms, timings.elapsed_wall_ms);
   printf("  Seggregated timings:\n");
-  printf("    JSON Parse       : (CPU: %.4f ms | Wall: %.4f ms)\n",
-         json_load_timings.elapsed_cpu_ms, json_load_timings.elapsed_wall_ms);
-  printf("    Haversine compute: (CPU: %.4f ms | Wall: %.4f ms)\n",
-         haversine_compute_timings.elapsed_cpu_ms, haversine_compute_timings.elapsed_wall_ms);
+  printf("    JSON Parse       : (CPU: %.4f ms | Wall: %.4f ms | ticks: %lu | "
+         "%2.2f%%)\n",
+         json_load_timings.elapsed_cpu_ms, json_load_timings.elapsed_wall_ms,
+         json_load_timings.elapsed_cpu_ticks,
+         100.0 * json_load_timings.elapsed_cpu_ticks / total_ticks);
+  printf("    Haversine compute: (CPU: %.4f ms | Wall: %.4f ms | ticks: %lu | "
+         "%2.2f%%)\n",
+         haversine_compute_timings.elapsed_cpu_ms,
+         haversine_compute_timings.elapsed_wall_ms,
+         haversine_compute_timings.elapsed_cpu_ticks,
+         100.0 * haversine_compute_timings.elapsed_cpu_ticks / total_ticks);
+
+  cpu_freq = guess_cpu_frequency();
+  printf("\n\nCPU Freq: %lu\n", cpu_freq);
 
   printf("\n");
   return 0;
