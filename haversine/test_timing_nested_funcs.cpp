@@ -39,8 +39,7 @@ void two_level_func() {
 }
 
 void recursive_ping_pong_func() {
-  TIMED_FUNC;
-  for (u64 i = 0; i < 1<<8; i++) {
+  for (u64 i = 0; i < 1<<28; i++) {
     wowza += 11;
     wowza *= 17;
   }
@@ -50,7 +49,7 @@ void recursive_ping_pong_func() {
 void recursive_func() {
   TIMED_FUNC;
   wawza--;
-  for (u64 i = 0; i < 1<<24; i++) {
+  for (u64 i = 0; i < 1<<28; i++) {
     wowza += 11;
     wowza *= 17;
   }

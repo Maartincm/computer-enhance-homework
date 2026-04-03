@@ -87,45 +87,45 @@ void timing_end(TimeMeasurement *timings) {
 namespace Timing {
 struct TimedScope {
   const char *scope_name;
-  u64 ticks;
-  u64 elapsed;
-  u64 elapsed_in_children;
+  u64 elapsed_exclusive;
+  u64 elapsed_inclusive;
   u32 times_called;
-  s32 parent_scope_index;
 };
 
 struct GlobalTiming {
   TimedScope timing_slots[64];
   u64 begin_tick;
   s32 current_scope_index;
-  s32 slot_count;
 };
 
 static GlobalTiming global_timing;
 
 struct DeferredTimer {
-  u64 _scope_index;
-  DeferredTimer(const char *scope_name, u64 scope_index)
-      : _scope_index(scope_index) {
-    TimedScope *slot = global_timing.timing_slots + scope_index;
-    if (!slot->ticks) {
-      slot->ticks = read_cpu_timer();
-      slot->scope_name = scope_name;
-      slot->parent_scope_index = global_timing.current_scope_index;
-    }
-    slot->times_called++;
+  const char *_scope_name;
+  u64 _initial_elapsed;
+  u64 _begin;
+  u32 _scope_index;
+  s32 _parent_scope_index;
+
+  DeferredTimer(const char *scope_name, u64 scope_index) {
+    _scope_index = scope_index;
+    TimedScope *slot = global_timing.timing_slots + _scope_index;
+    _scope_name = scope_name;
+    _initial_elapsed = slot->elapsed_inclusive;
+    _begin = read_cpu_timer();
+    _parent_scope_index = global_timing.current_scope_index;
     global_timing.current_scope_index = scope_index;
   }
   ~DeferredTimer() {
+    u64 elapsed = read_cpu_timer() - _begin;
     TimedScope *slot = global_timing.timing_slots + _scope_index;
-    if (slot->ticks) {
-      u64 elapsed = read_cpu_timer() - slot->ticks;
-      slot->ticks = 0;
-      slot->elapsed += elapsed;
-      TimedScope *parent_slot = global_timing.timing_slots + slot->parent_scope_index;
-      parent_slot->elapsed_in_children += elapsed;
-    }
-    global_timing.current_scope_index = slot->parent_scope_index;
+    TimedScope *parent_slot = global_timing.timing_slots + _parent_scope_index;
+    slot->scope_name = _scope_name;
+    slot->elapsed_exclusive += elapsed;
+    slot->elapsed_inclusive = _initial_elapsed + elapsed;
+    slot->times_called++;
+    parent_slot->elapsed_exclusive -= elapsed;
+    global_timing.current_scope_index = _parent_scope_index;
   }
 };
 
@@ -144,13 +144,13 @@ void print_profiling() {
     if (!timing_slot->times_called) {
       continue;
     }
-    u64 ticks = timing_slot->elapsed - timing_slot->elapsed_in_children;
+    u64 ticks = timing_slot->elapsed_exclusive;
     printf("  [%s x%u]: (CPU: %.4f ms | ticks: %lu | "
            "%2.2f%%)",
            timing_slot->scope_name, timing_slot->times_called, 1000.0 * (f64)ticks / cpu_freq, ticks,
            100.0 * ticks / total_elapsed);
-    if (timing_slot->elapsed_in_children) {
-      u64 ticks_plus_children = timing_slot->elapsed;
+    if (timing_slot->elapsed_inclusive - timing_slot->elapsed_exclusive) {
+      u64 ticks_plus_children = timing_slot->elapsed_inclusive;
       printf(" (plus children: %.4f ms | %2.2f%%)",
              1000.0 * (f64)ticks_plus_children / cpu_freq,
              100.0 * (f64)ticks_plus_children / total_elapsed);
