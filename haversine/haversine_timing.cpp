@@ -5,20 +5,6 @@
 
 #include "haversine_types.h"
 
-struct TimeMeasurement {
-  // std::chrono::time_point<std::chrono::steady_clock> start_wall;
-  // std::chrono::time_point<std::chrono::steady_clock> end_wall;
-  // std::clock_t start_cpu;
-  // std::clock_t end_cpu;
-  u64 start_wall;
-  u64 end_wall;
-  u64 start_cpu;
-  u64 end_cpu;
-  f64 elapsed_wall_ms;
-  f64 elapsed_cpu_ms;
-  u64 elapsed_cpu_ticks;
-};
-
 u64 get_os_timer_frequency() { return 1000000000; }
 
 u64 read_os_timer() {
@@ -51,44 +37,13 @@ u64 ReadOSTimer() { return read_os_timer(); }
 
 u64 ReadCPUTimer() { return read_cpu_timer(); }
 
-// void timing_start(TimeMeasurement *timings) {
-//     timings->start_cpu = std::clock();
-//     timings->start_wall = std::chrono::steady_clock::now();
-// }
-//
-// void timing_end(TimeMeasurement *timings) {
-//     timings->end_cpu = std::clock();
-//     timings->end_wall = std::chrono::steady_clock::now();
-//     timings->elapsed_wall_ms = std::chrono::duration<f64,
-//     std::milli>(timings->end_wall - timings->start_wall).count();
-//     timings->elapsed_cpu_ms = 1000.0 * (timings->end_cpu -
-//     timings->start_cpu) / CLOCKS_PER_SEC;
-// }
-
-void timing_start(TimeMeasurement *timings) {
-  timings->start_cpu = read_cpu_timer();
-  timings->start_wall = read_os_timer();
-}
-
-void timing_end(TimeMeasurement *timings) {
-  timings->end_cpu = read_cpu_timer();
-  timings->end_wall = read_os_timer();
-  timings->elapsed_cpu_ticks = timings->end_cpu - timings->start_cpu;
-  timings->elapsed_wall_ms = 1000.0 *
-                             (timings->end_wall - timings->start_wall) /
-                             get_os_timer_frequency();
-  timings->elapsed_cpu_ms =
-      1000.0 * (timings->end_cpu - timings->start_cpu) / guess_cpu_frequency();
-}
-
-#define TIMED_BLOCK(name) Timing::DeferredTimer _(name, __COUNTER__ + 1)
-#define TIMED_FUNC TIMED_BLOCK(__func__)
-
 namespace Timing {
+
 struct TimedScope {
   const char *scope_name;
   u64 elapsed_exclusive;
   u64 elapsed_inclusive;
+  u64 mem_bytes_transferred;
   u32 times_called;
 };
 
@@ -97,22 +52,29 @@ struct GlobalTiming {
   u64 begin_tick;
   s32 current_scope_index;
 };
-
 static GlobalTiming global_timing;
+
+#if PROFILE
+#define TIMED_BLOCK_BANDWIDTH(name, size) Timing::DeferredTimer _(name, __COUNTER__ + 1, size)
+#define TIMED_BLOCK(name) TIMED_BLOCK_BANDWIDTH(name, 0)
+#define TIMED_FUNC TIMED_BLOCK(__func__)
+#define TIMED_FUNC_BANDWIDTH(size) TIMED_BLOCK_BANDWIDTH(__func__, size)
 
 struct DeferredTimer {
   const char *_scope_name;
   u64 _initial_elapsed;
   u64 _begin;
+  u64 _mem_bytes_transferred;
   u32 _scope_index;
   s32 _parent_scope_index;
 
-  DeferredTimer(const char *scope_name, u64 scope_index) {
+  DeferredTimer(const char *scope_name, u64 scope_index, u64 size) {
     _scope_index = scope_index;
     TimedScope *slot = global_timing.timing_slots + _scope_index;
     _scope_name = scope_name;
     _initial_elapsed = slot->elapsed_inclusive;
     _begin = read_cpu_timer();
+    _mem_bytes_transferred = size;
     _parent_scope_index = global_timing.current_scope_index;
     global_timing.current_scope_index = scope_index;
   }
@@ -123,11 +85,19 @@ struct DeferredTimer {
     slot->scope_name = _scope_name;
     slot->elapsed_exclusive += elapsed;
     slot->elapsed_inclusive = _initial_elapsed + elapsed;
+    slot->mem_bytes_transferred += _mem_bytes_transferred;
     slot->times_called++;
     parent_slot->elapsed_exclusive -= elapsed;
     global_timing.current_scope_index = _parent_scope_index;
   }
 };
+
+#else
+#define TIMED_BLOCK(...)
+#define TIMED_BLOCK_BANDWIDTH(...)
+#define TIMED_FUNC
+#define TIMED_FUNC_BANDWIDTH(...)
+#endif
 
 void begin_profiler() { global_timing.begin_tick = read_cpu_timer(); }
 
@@ -136,7 +106,7 @@ void print_profiling() {
   u64 total_elapsed = read_cpu_timer() - global_timing.begin_tick;
   printf("====================================================================="
          "===========\n");
-  printf("Profiling info:\n");
+  printf("Profiling info (CPU Freq: %.4f GHz):\n", (f64)cpu_freq / 1000000000.0);
   printf("  Total time taken: (CPU: %.4f ms | ticks: %lu | %2.2f%%)\n",
          1000.0 * (f64)total_elapsed / cpu_freq, total_elapsed, 100.0);
   for (u32 i = 0; i < 64; i++ ) {
@@ -154,6 +124,12 @@ void print_profiling() {
       printf(" (plus children: %.4f ms | %2.2f%%)",
              1000.0 * (f64)ticks_plus_children / cpu_freq,
              100.0 * (f64)ticks_plus_children / total_elapsed);
+    }
+    if (timing_slot->mem_bytes_transferred) {
+      f64 elapsed_in_seconds = (f64)timing_slot->elapsed_inclusive / cpu_freq;
+      f64 transfer_mb = (f64)timing_slot->mem_bytes_transferred / 1024.0 / 1024.0;
+      f64 throughput_gb = (f64)timing_slot->mem_bytes_transferred / 1024.0 / 1024.0 / 1024.0 / elapsed_in_seconds;
+      printf(" (transferred %.4f MB at %.4f GB/s)", transfer_mb, throughput_gb);
     }
     printf("\n");
   }

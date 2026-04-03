@@ -2,6 +2,8 @@
 
 #include "haversine_types.h"
 
+#define PROFILE 1
+
 #include "haversine_json_parser.cpp"
 #include "haversine_timing.cpp"
 #include "listing_0065_haversine_formula.cpp"
@@ -9,6 +11,7 @@
 #define EARTH_RADIUS 6372.8
 
 #define DOUBLE_EPSILON 0.00000001
+
 
 int main(int argc, char *argv[]) {
   Timing::begin_profiler();
@@ -48,15 +51,7 @@ int main(int argc, char *argv[]) {
 
   printf("\nExpected haversine average: %.16f\n", total_expected_result);
 
-  printf("\n\nProcessing points from JSON file...\n");
-  u64 cpu_freq = guess_cpu_frequency();
-  printf("\n\nCPU Freq: %lu\n", cpu_freq);
-
-  TimeMeasurement timings{};
-  timing_start(&timings);
-  TimeMeasurement json_load_timings = timings;
-  TimeMeasurement batch_timings;
-  TimeMeasurement haversine_compute_timings;
+  printf("\nProcessing points from JSON file...\n");
 
   char *input_content;
   {
@@ -64,7 +59,7 @@ int main(int argc, char *argv[]) {
     input_content = (char *)malloc(input_file_size);
   }
   {
-    TIMED_BLOCK("Read JSON file");
+    TIMED_BLOCK_BANDWIDTH("Read JSON file", input_file_size);
     fread(input_content, input_file_size, 1, input_file_pointer);
     fclose(input_file_pointer);
   }
@@ -80,19 +75,9 @@ int main(int argc, char *argv[]) {
     pairs_array = JSON::get_value_header(json_object, "pairs");
     point_object = JSON::get_array_elem_header(pairs_array, 0);
   }
-  timing_end(&json_load_timings);
-
-  timing_start(&batch_timings);
-  haversine_compute_timings = batch_timings;
-
-#define PRINT_PROGRESS 0
-#if PRINT_PROGRESS
-  u64 base_checkpoint = 100000;
-  u64 next_checkpoint = base_checkpoint;
-#endif
 
   if (point_object) {
-    TIMED_BLOCK("Haversine compute");
+    TIMED_BLOCK_BANDWIDTH("Haversine compute", pairs_array->count * sizeof(f64) * 4);
     for (u32 point_index = 0; point_index < pairs_array->count; point_index++) {
       f64 f1 = JSON::get_value_f64(point_object, "x0");
       f64 f2 = JSON::get_value_f64(point_object, "y0");
@@ -115,49 +100,14 @@ int main(int argc, char *argv[]) {
             std::to_string(haversine_result) + "`");
       }
 #endif
-
-#if PRINT_PROGRESS
-      if (point_index == next_checkpoint) {
-        timing_end(&batch_timings);
-        printf(
-            "\tPoints processed: %lu | This batch took: (CPU: %.4f ms | Wall: "
-            "%.4f ms)\n",
-            next_checkpoint, batch_timings.elapsed_cpu_ms,
-            batch_timings.elapsed_wall_ms);
-        next_checkpoint += base_checkpoint;
-        timing_start(&batch_timings);
-      }
-#endif
     }
   }
   {
     TIMED_BLOCK("Reporting");
-    timing_end(&haversine_compute_timings);
-    timing_end(&timings);
 
     f64 haversine_average = sum / (f64)pairs_array->count;
     printf("\nAverage of the haversine sum: %.16f\n", haversine_average);
 
-    u64 total_ticks = timings.elapsed_cpu_ticks;
-    printf("\nTotal elapsed time: (CPU: %.4f ms | Wall: %.4f ms)\n",
-           timings.elapsed_cpu_ms, timings.elapsed_wall_ms);
-    printf("  Seggregated timings:\n");
-    printf(
-        "    JSON Parse       : (CPU: %.4f ms | Wall: %.4f ms | ticks: %lu | "
-        "%2.2f%%)\n",
-        json_load_timings.elapsed_cpu_ms, json_load_timings.elapsed_wall_ms,
-        json_load_timings.elapsed_cpu_ticks,
-        100.0 * json_load_timings.elapsed_cpu_ticks / total_ticks);
-    printf(
-        "    Haversine compute: (CPU: %.4f ms | Wall: %.4f ms | ticks: %lu | "
-        "%2.2f%%)\n",
-        haversine_compute_timings.elapsed_cpu_ms,
-        haversine_compute_timings.elapsed_wall_ms,
-        haversine_compute_timings.elapsed_cpu_ticks,
-        100.0 * haversine_compute_timings.elapsed_cpu_ticks / total_ticks);
-
-    cpu_freq = guess_cpu_frequency();
-    printf("\n\nCPU Freq: %lu\n", cpu_freq);
   }
 
   Timing::print_profiling();
