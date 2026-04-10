@@ -1,0 +1,70 @@
+;  ========================================================================
+;
+;  (C) Copyright 2023 by Molly Rocket, Inc., All Rights Reserved.
+;
+;  This software is provided 'as-is', without any express or implied
+;  warranty. In no event will the authors be held liable for any damages
+;  arising from the use of this software.
+;
+;  Please see https://computerenhance.com for more information
+;
+;  ========================================================================
+
+;  ========================================================================
+;  LISTING 152
+;  ========================================================================
+
+global Read_32x8
+
+section .text
+
+;
+; NOTE: This ASM routine is written for the Linux 64-bit ABI.
+;
+;    rdi: inner_repetitions
+;    rsi: data pointer
+;    rdx: repetition_count
+;    rcx: read stride
+;
+
+Read_32x8:
+align 64
+.outer_loop:
+    ; Update the read base pointer to point to the start of the block
+    mov rax, rsi
+    ; Reset the inner repetition_count
+    mov r8, rdi
+
+    .inner_loop:
+        ; Read 512 bytes
+        vmovdqu ymm0, [rax]
+        vmovdqu ymm0, [rax + 0x20]
+        vmovdqu ymm0, [rax + 0x40]
+        vmovdqu ymm0, [rax + 0x60]
+        vmovdqu ymm0, [rax + 0x80]
+        vmovdqu ymm0, [rax + 0xa0]
+        vmovdqu ymm0, [rax + 0xc0]
+        vmovdqu ymm0, [rax + 0xe0]
+        vmovdqu ymm0, [rax + 0x100]
+        vmovdqu ymm0, [rax + 0x120]
+        vmovdqu ymm0, [rax + 0x140]
+        vmovdqu ymm0, [rax + 0x160]
+        vmovdqu ymm0, [rax + 0x180]
+        vmovdqu ymm0, [rax + 0x1a0]
+        vmovdqu ymm0, [rax + 0x1c0]
+        vmovdqu ymm0, [rax + 0x1e0]
+
+        ; Update the read base pointer to point to the new offset
+        add rax, rcx
+
+        ; Repeat until we covered the entire test_size in 256 byte chunks
+        dec r8
+        jnz .inner_loop
+
+    ; Loop until we read the `test_size` an amount of `repetition_count` times
+    ; This means that we will read a total of `test_size` * `repetition_count` bytes
+    dec rdx
+    jnz .outer_loop
+    ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
