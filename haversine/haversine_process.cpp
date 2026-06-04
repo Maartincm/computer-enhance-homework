@@ -12,7 +12,13 @@
 
 #include "haversine_json_parser.cpp"
 #include "haversine_timing.cpp"
+
+#define HAVERSINE_REPLACEMENT 1
+#if HAVERSINE_REPLACEMENT
+#include "haversine_replacement.cpp"
+#else
 #include "listing_0065_haversine_formula.cpp"
+#endif
 
 #define EARTH_RADIUS 6372.8
 
@@ -140,7 +146,7 @@ int main(int argc, char *argv[]) {
 
   printf("\nProcessing points from JSON file...\n");
 
-#define ONLY_READ_FILE_IN_CHUNKS 1
+#define ONLY_READ_FILE_IN_CHUNKS 0
 #if ONLY_READ_FILE_IN_CHUNKS
   char *input_content = read_json_file_2mb_chunks(input_file_name);
 #else
@@ -166,7 +172,7 @@ int main(int argc, char *argv[]) {
       f64 f2 = JSON::get_value_f64(point_object, "y0");
       f64 f3 = JSON::get_value_f64(point_object, "x1");
       f64 f4 = JSON::get_value_f64(point_object, "y1");
-      f64 haversine_result = ReferenceHaversine(f1, f2, f3, f4, EARTH_RADIUS);
+      f64 haversine_result = ReferenceHaversineR2(f1, f2, f3, f4, EARTH_RADIUS);
       sum += haversine_result;
       point_object = point_object->next_header;
 
@@ -188,7 +194,7 @@ int main(int argc, char *argv[]) {
   {
     TIMED_BLOCK("Reporting");
 
-    f64 haversine_average = sum / (f64)pairs_array->count;
+    f64 haversine_average = sum * 2 * EARTH_RADIUS / (f64)pairs_array->count;
     printf("\nAverage of the haversine sum: %.16f\n", haversine_average);
   }
 
